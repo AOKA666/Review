@@ -498,63 +498,66 @@ export default function HomePage() {
                                 key={qa.id}
                                 className="flex flex-col gap-2 rounded-xl border border-dashed border-slate-200 bg-slate-50 p-3"
                               >
-                                <div className="flex items-center justify-between">
-                                  <span className="text-xs font-semibold text-slate-800">Q</span>
-                                  <button
-                                    type="button"
-                                    className="text-xs font-medium text-rose-500 underline-offset-2 hover:underline"
-                                    onClick={() => handleRemoveQa(row.id, qa.id)}
-                                  >
-                                    删除
-                                  </button>
-                                </div>
-                                <textarea
-                                  className="min-h-[60px] flex-1 border-0 bg-transparent p-0 text-sm leading-relaxed outline-none focus-visible:ring-0"
-                                  value={qa.question}
-                                  onChange={(event) =>
-                                    handleQaQuestionChange(row.id, qa.id, event.target.value)
-                                  }
-                                  onKeyDown={(event) => {
-                                    if (event.key === "Enter" && !event.shiftKey) {
-                                      event.preventDefault();
-                                      handleShowAnswer(row.id, qa.id);
+                                <div className="flex items-start gap-2">
+                                  <span className="text-xs font-semibold text-red-600 mt-1">Q:</span>
+                                  <textarea
+                                    className="min-h-[52px] flex-1 border-0 bg-transparent p-0 text-sm leading-relaxed outline-none focus-visible:ring-0"
+                                    value={qa.question}
+                                    onChange={(event) =>
+                                      handleQaQuestionChange(row.id, qa.id, event.target.value)
                                     }
-                                    if (event.key === "Escape") {
-                                      event.currentTarget.blur();
-                                    }
-                                  }}
-                                  placeholder="Q：..."
-                                />
-                                {qa.showAnswer && (
-                                  <>
-                                    <div className="flex items-center justify-between">
-                                      <span className="text-xs font-semibold text-slate-800">A</span>
-                                    </div>
-                                    <textarea
-                                      className="min-h-[60px] flex-1 border-0 bg-transparent p-0 text-sm leading-relaxed outline-none focus-visible:ring-0"
-                                      value={qa.answer}
-                                      onChange={(event) =>
-                                        handleQaAnswerChange(row.id, qa.id, event.target.value)
+                                    onKeyDown={(event) => {
+                                      if (event.key === "Enter" && !event.shiftKey) {
+                                        event.preventDefault();
+                                        handleShowAnswer(row.id, qa.id);
                                       }
-                                      onKeyDown={(event) => {
-                                        if (event.key === "Enter" && !event.shiftKey) {
-                                          event.preventDefault();
-                                          handleAddQa(row.id);
+                                      if (event.key === "Escape") {
+                                        event.currentTarget.blur();
+                                      }
+                                    }}
+                                    placeholder=""
+                                  />
+                                </div>
+                                {qa.showAnswer && (
+                                  <div className="flex flex-col gap-1 pt-1">
+                                    <div className="flex items-start gap-2">
+                                      <span className="text-xs font-semibold text-blue-600 mt-1">A:</span>
+                                      <textarea
+                                        className="min-h-[52px] flex-1 border-0 bg-transparent p-0 text-sm leading-relaxed outline-none focus-visible:ring-0"
+                                        value={qa.answer}
+                                        onChange={(event) =>
+                                          handleQaAnswerChange(row.id, qa.id, event.target.value)
                                         }
-                                        if (event.key === "Escape") {
-                                          event.currentTarget.blur();
-                                        }
-                                      }}
-                                      placeholder="A：..."
-                                    />
-                                  </>
+                                        onKeyDown={(event) => {
+                                          if (event.key === "Enter" && !event.shiftKey) {
+                                            event.preventDefault();
+                                            handleAddQa(row.id);
+                                          }
+                                          if (event.key === "Escape") {
+                                            event.currentTarget.blur();
+                                          }
+                                        }}
+                                        placeholder=""
+                                      />
+                                    </div>
+                                    <div className="flex justify-end">
+                                      <button
+                                        type="button"
+                                        className="text-base font-medium text-rose-500 hover:text-rose-600"
+                                        onClick={() => handleRemoveQa(row.id, qa.id)}
+                                        aria-label="删除 Q/A"
+                                      >
+                                        🗑
+                                      </button>
+                                    </div>
+                                  </div>
                                 )}
                               </div>
                             ))}
                           <button
                             type="button"
                             className="text-left text-sm font-medium text-blue-600 hover:text-blue-500"
-                            onClick={() => handleAddQa(row.id, "Q")}
+                            onClick={() => handleAddQa(row.id)}
                           >
                             + 新增问题
                           </button>
