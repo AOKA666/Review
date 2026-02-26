@@ -1,33 +1,9 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { QaPair, ReviewRecord, ReviewRow } from "../lib/review";
 
 type SaveStatus = "ready" | "saving" | "saved" | "error" | "dirty";
-
-type QaPair = {
-  id: string;
-  question: string;
-  answer: string;
-  showAnswer: boolean;
-  order_index: number;
-};
-
-type ReviewRow = {
-  id: string;
-  category: string;
-  context: string;
-  solutions: string;
-  order_index: number;
-  qas: QaPair[];
-};
-
-type ReviewRecord = {
-  id: string;
-  date: string;
-  created_at: string;
-  updated_at: string;
-  rows: ReviewRow[];
-};
 
 const STORAGE_KEY = "repano_reviews";
 const MAX_HISTORY = 20;
@@ -59,16 +35,16 @@ const buildDefaultRows = (): ReviewRow[] => [
   {
     id: randomId(),
     category: "学习",
-    context: "- ",
-    solutions: "- ",
+    context: " ",
+    solutions: " ",
     order_index: 0,
     qas: [buildQaPair()]
   },
   {
     id: randomId(),
     category: "生活",
-    context: "- ",
-    solutions: "- ",
+    context: " ",
+    solutions: " ",
     order_index: 1,
     qas: [buildQaPair()]
   }
@@ -123,7 +99,7 @@ export default function HomePage() {
     });
   };
 
-  const persistToStorage = (list: ReviewRecord[]) => {
+  const persistLocally = (list: ReviewRecord[]) => {
     if (typeof window === "undefined") return;
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(sortAndLimit(list)));
@@ -133,22 +109,63 @@ export default function HomePage() {
     }
   };
 
-  const persistNow = () => {
+  const saveToSupabase = async (payload: ReviewRecord[]) => {
+    const response = await fetch("/api/reviews", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reviews: payload })
+    });
+    if (!response.ok) {
+      const failure = await response.text();
+      throw new Error(failure || "Supabase 写入失败");
+    }
+  };
+
+  const persistNow = async () => {
     if (typeof window === "undefined") return;
     if (!latestReviews.current.length) return;
     const now = new Date().toISOString();
     const updated = latestReviews.current.map((review) =>
       review.id === currentIdRef.current ? { ...review, updated_at: now } : review
     );
+    const payload = sortAndLimit(updated);
+    setReviewsDirect(payload);
+    persistLocally(payload);
     try {
-      const payload = sortAndLimit(updated);
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
-      setReviewsDirect(payload);
+      await saveToSupabase(payload);
       setStatus("saved");
     } catch (error) {
-      console.error("保存失败", error);
+      console.error("Supabase 写入失败", error);
       setStatus("error");
     }
+  };
+
+  const loadLocalReviews = (): ReviewRecord[] => {
+    if (typeof window === "undefined") return [];
+    const raw = window.localStorage.getItem(STORAGE_KEY);
+    if (!raw) return [];
+    try {
+      return JSON.parse(raw);
+    } catch (error) {
+      console.error("读取本地数据失败", error);
+      return [];
+    }
+  };
+
+  const hydrateReviewList = (source: ReviewRecord[]) => {
+    const today = todayKey();
+    const todayReview = source.find((item) => item.date === today);
+    if (todayReview) {
+      setReviewsDirect(source);
+      setCurrentId(todayReview.id);
+      persistLocally(source);
+      return source;
+    }
+    const next = [buildReview(today), ...source];
+    setReviewsDirect(next);
+    setCurrentId(next[0]?.id ?? null);
+    persistLocally(next);
+    return next;
   };
 
   const scheduleSave = () => {
@@ -157,7 +174,7 @@ export default function HomePage() {
       clearTimeout(saveTimer.current);
     }
     saveTimer.current = setTimeout(() => {
-      persistNow();
+      void persistNow();
     }, 1000);
   };
 
@@ -174,7 +191,7 @@ export default function HomePage() {
     setReviewsDirect(next);
     setCurrentId(next[0]?.id ?? null);
     setStatus("saved");
-    persistToStorage(next);
+    void persistNow();
   };
 
   const handleRowFieldChange = (
@@ -335,27 +352,27 @@ export default function HomePage() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    let parsed: ReviewRecord[] = [];
-    if (raw) {
-      try {
-        parsed = JSON.parse(raw);
-      } catch (error) {
-        console.error("读取复盘失败", error);
-      }
-    }
-    const today = todayKey();
-    const todayReview = parsed.find((item) => item.date === today);
-    if (todayReview) {
-      setReviewsDirect(parsed);
-      setCurrentId(todayReview.id);
-    } else {
-      const next = [buildReview(today), ...parsed];
-      setReviewsDirect(next);
-      setCurrentId(next[0]?.id ?? null);
-      persistToStorage(next);
-    }
+    const stored = loadLocalReviews();
+    hydrateReviewList(stored);
     setStatus("saved");
+
+    const syncRemote = async () => {
+      try {
+        const response = await fetch("/api/reviews");
+        if (!response.ok) {
+          throw new Error("Supabase 读取失败");
+        }
+        const data = (await response.json()) as { reviews: ReviewRecord[] };
+        if (Array.isArray(data?.reviews)) {
+          hydrateReviewList(data.reviews);
+          setStatus("saved");
+        }
+      } catch (error) {
+        console.error("Supabase 读取失败", error);
+      }
+    };
+
+    void syncRemote();
   }, []);
 
   useEffect(() => {
@@ -390,7 +407,7 @@ export default function HomePage() {
           <p className="text-xs uppercase tracking-[0.3em] text-slate-500">只写今日 · 每日一表</p>
           <div className="flex flex-wrap items-baseline justify-between gap-3">
             <h1 className="text-3xl font-semibold leading-tight">复盘日志</h1>
-            <span className={`rounded-full px-4 py-1 text-sm font-semibold ${badgeClass}`} onClick={status === "error" ? persistNow : undefined}>
+              <span className={`rounded-full px-4 py-1 text-sm font-semibold ${badgeClass}`} onClick={status === "error" ? () => void persistNow() : undefined}>
               {statusText[status]}
             </span>
           </div>
