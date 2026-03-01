@@ -78,11 +78,16 @@ export default function HomePage() {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestReviews = useRef<ReviewRecord[]>([]);
   const currentIdRef = useRef<string | null>(null);
+  const [isHistoryCollapsed, setIsHistoryCollapsed] = useState(false);
 
   const currentReview = useMemo(
     () => reviews.find((item) => item.id === currentId) ?? null,
     [reviews, currentId]
   );
+
+  const toggleHistoryCollapsed = () => {
+    setIsHistoryCollapsed((prev) => !prev);
+  };
 
   const setReviewsDirect = (next: ReviewRecord[]) => {
     const sorted = sortAndLimit(next);
@@ -400,6 +405,14 @@ export default function HomePage() {
       ? "bg-rose-100 text-rose-700 hover:bg-rose-200"
       : "bg-slate-100 text-slate-600";
 
+  const mainGridClass = isHistoryCollapsed
+    ? "grid gap-8 lg:grid-cols-[1fr]"
+    : "grid gap-8 lg:grid-cols-[auto_1fr]";
+
+  const historyToggleMessage = isHistoryCollapsed
+    ? "历史复盘面板已折叠，点击按钮可再次查看历史记录。"
+    : "历史复盘列表正在显示，折叠后可为右侧输入争取更多空间。";
+
   return (
     <div className="min-h-screen bg-[#f5f5f7] text-[#0f172a]">
       <div className="mx-auto flex max-w-7xl flex-col gap-8 px-6 py-10">
@@ -413,19 +426,30 @@ export default function HomePage() {
           </div>
         </header>
 
-        <main className="grid gap-8 lg:grid-cols-[280px_1fr]">
-          <section className="rounded-2xl bg-white p-8 shadow-lg shadow-slate-200">
-            <div className="mb-4 flex items-center justify-between">
-              <h2 className="text-lg font-semibold">历史复盘</h2>
-              <button
-                type="button"
-                className="rounded-full border border-blue-500 px-3 py-1 text-sm font-medium text-blue-600 transition hover:bg-blue-50"
-                onClick={handleNewReview}
-              >
-                + 新建今日复盘
-              </button>
-            </div>
-            <div className="flex flex-col gap-3">
+        <main className={mainGridClass}>
+          {!isHistoryCollapsed && (
+            <section className="rounded-2xl bg-white p-8 shadow-lg shadow-slate-200">
+              <div className="mb-4 flex items-center justify-between">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-500 px-4 py-1.5 text-sm font-semibold text-white shadow-lg shadow-blue-200 transition hover:from-blue-500 hover:to-indigo-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-indigo-400"
+                    onClick={handleNewReview}
+                  >
+                    <span className="text-base leading-none">+</span>
+                    <span className="whitespace-nowrap">新建今日复盘</span>
+                  </button>
+                  <button
+                    type="button"
+                    className="inline-flex items-center gap-1 rounded-2xl border border-slate-200 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-slate-300"
+                    onClick={toggleHistoryCollapsed}
+                  >
+                    <span className="translate-y-px text-sm leading-none">⌄</span>
+                    <span>收起历史面板</span>
+                  </button>
+                </div>
+              </div>
+              <div className="flex flex-col gap-3">
               {reviews.length === 0 && (
                 <p className="text-sm text-slate-500">尚未写任何复盘，点击右上角可启动今日表格。</p>
               )}
@@ -453,7 +477,8 @@ export default function HomePage() {
               ))}
             </div>
             <p className="mt-4 text-xs text-slate-400">历史列表按日期降序，仅展示最近 20 条。</p>
-          </section>
+            </section>
+          )}
 
           <section className="flex min-h-[560px] flex-col gap-4 rounded-2xl bg-white p-8 shadow-lg shadow-slate-200">
             <div className="flex items-center justify-between gap-2">
@@ -464,6 +489,18 @@ export default function HomePage() {
               <div className="rounded-full bg-slate-100 px-4 py-1 text-sm text-slate-600">
                 {currentReview ? new Date(currentReview.updated_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : ""}
               </div>
+            </div>
+
+            <div className="flex items-center justify-between gap-3 text-sm text-slate-500">
+              <p className="flex-1">{historyToggleMessage}</p>
+              <button
+                type="button"
+                className="rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+                onClick={toggleHistoryCollapsed}
+                aria-expanded={!isHistoryCollapsed}
+              >
+                {isHistoryCollapsed ? "展开历史复盘" : "折叠历史复盘"}
+              </button>
             </div>
 
             <div className="flex-1 overflow-hidden rounded-2xl bg-[#f8fafc] p-4">
