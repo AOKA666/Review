@@ -199,6 +199,36 @@ export default function HomePage() {
     void persistNow();
   };
 
+  const handleDeleteCurrentReview = () => {
+    if (!currentReview) return;
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(`确认删除 ${currentReview.date} 的复盘吗？`)
+    ) {
+      return;
+    }
+
+    const remaining = reviews.filter((item) => item.id !== currentReview.id);
+    const nextList = remaining.length ? remaining : [buildReview(todayKey())];
+    const nextCurrentId = nextList[0]?.id ?? null;
+
+    setReviewsDirect(nextList);
+    setCurrentId(nextCurrentId);
+    currentIdRef.current = nextCurrentId;
+    persistLocally(nextList);
+
+    setStatus("saving");
+    void (async () => {
+      try {
+        await saveToSupabase(sortAndLimit(nextList));
+        setStatus("saved");
+      } catch (error) {
+        console.error("Supabase 鍐欏叆澶辫触", error);
+        setStatus("error");
+      }
+    })();
+  };
+
   const handleRowFieldChange = (
     rowId: string,
     field: "category" | "context" | "solutions",
@@ -486,8 +516,19 @@ export default function HomePage() {
                 <p className="text-lg font-semibold">{currentReview ? formatHeaderDate(currentReview.date) : "尚未创建复盘"}</p>
                 <p className="text-sm text-slate-500">自动保存 · 失焦或 1 秒完成</p>
               </div>
-              <div className="rounded-full bg-slate-100 px-4 py-1 text-sm text-slate-600">
-                {currentReview ? new Date(currentReview.updated_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : ""}
+              <div className="flex items-center gap-2">
+                {currentReview && (
+                  <button
+                    type="button"
+                    className="rounded-full border border-rose-200 px-3 py-1 text-xs font-medium text-rose-600 transition hover:border-rose-300 hover:bg-rose-50"
+                    onClick={handleDeleteCurrentReview}
+                  >
+                    删除这一天
+                  </button>
+                )}
+                <div className="rounded-full bg-slate-100 px-4 py-1 text-sm text-slate-600">
+                  {currentReview ? new Date(currentReview.updated_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : ""}
+                </div>
               </div>
             </div>
 
