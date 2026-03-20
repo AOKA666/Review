@@ -1,15 +1,21 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
-const SUPABASE_URL = process.env.SUPABASE_URL;
-const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 let supabaseAdmin: SupabaseClient | null = null;
 
 export const getSupabaseAdmin = (): SupabaseClient => {
   if (supabaseAdmin) return supabaseAdmin;
-  if (!SUPABASE_URL || !SUPABASE_SERVICE_ROLE_KEY) {
-    throw new Error("Supabase URL and service role key must be set in environment variables");
+  const supabaseUrl =
+    process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
+  const serviceRoleKey =
+    process.env.SUPABASE_SERVICE_ROLE_KEY ??
+    process.env.SUPABASE_SERVICE_KEY ??
+    process.env.SUPABASE_SECRET_KEY;
+  if (!supabaseUrl || !serviceRoleKey) {
+    throw new Error(
+      "Supabase env missing. Set SUPABASE_URL (or NEXT_PUBLIC_SUPABASE_URL) and SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_SERVICE_KEY/SUPABASE_SECRET_KEY)."
+    );
   }
-  supabaseAdmin = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+  supabaseAdmin = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false }
   });
   return supabaseAdmin;

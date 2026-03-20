@@ -16,7 +16,16 @@ type SelectResponse =
     };
 
 export async function GET(): Promise<NextResponse<SelectResponse>> {
-  const supabase = getSupabaseAdmin();
+  let supabase;
+  try {
+    supabase = getSupabaseAdmin();
+  } catch (error) {
+    console.error("Supabase init error", error);
+    return NextResponse.json(
+      { reviews: [], updated_at: null },
+      { status: 500, statusText: "Supabase env not configured" }
+    );
+  }
   const { data, error } = await supabase
     .from(TABLE_NAME)
     .select("payload, updated_at")
@@ -39,7 +48,16 @@ export async function GET(): Promise<NextResponse<SelectResponse>> {
 export async function POST(
   request: Request
 ): Promise<NextResponse<{ ok: boolean }>> {
-  const supabase = getSupabaseAdmin();
+  let supabase;
+  try {
+    supabase = getSupabaseAdmin();
+  } catch (error) {
+    console.error("Supabase init error", error);
+    return NextResponse.json(
+      { ok: false },
+      { status: 500, statusText: "Supabase env not configured" }
+    );
+  }
   let payload: { reviews: ReviewRecord[] };
   try {
     payload = await request.json();
