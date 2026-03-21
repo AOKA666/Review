@@ -71,6 +71,9 @@ const sortAndLimit = (list: ReviewRecord[]) =>
     .sort((a, b) => b.date.localeCompare(a.date))
     .slice(0, MAX_HISTORY);
 
+const normalizeCategory = (value: string) => value.trim().replace(/^#+/, "");
+const UNCATEGORIZED_LABEL = "\u672a\u5206\u7c7b";
+
 export default function HomePage() {
   const [reviews, setReviews] = useState<ReviewRecord[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
@@ -79,11 +82,24 @@ export default function HomePage() {
   const latestReviews = useRef<ReviewRecord[]>([]);
   const currentIdRef = useRef<string | null>(null);
   const [isHistoryCollapsed, setIsHistoryCollapsed] = useState(false);
+  const [openCategoryRowId, setOpenCategoryRowId] = useState<string | null>(null);
 
   const currentReview = useMemo(
     () => reviews.find((item) => item.id === currentId) ?? null,
     [reviews, currentId]
   );
+  const categoryOptions = useMemo(() => {
+    const seen = new Set<string>();
+    for (const review of reviews) {
+      for (const row of review.rows) {
+        const category = normalizeCategory(row.category);
+        if (category) {
+          seen.add(category);
+        }
+      }
+    }
+    return [...seen];
+  }, [reviews]);
 
   const toggleHistoryCollapsed = () => {
     setIsHistoryCollapsed((prev) => !prev);
@@ -243,6 +259,37 @@ export default function HomePage() {
         );
         return { ...review, rows };
       })
+    );
+    scheduleSave();
+  };
+
+  const handleCreateCategory = (rowId: string) => {
+    if (typeof window === "undefined") return;
+    const raw = window.prompt("\u65b0\u5efa\u6807\u7b7e\uff08\u4e0d\u7528\u8f93\u5165#\uff09", "");
+    if (raw === null) return;
+    const nextCategory = normalizeCategory(raw);
+    if (!nextCategory) return;
+    handleRowFieldChange(rowId, "category", nextCategory);
+    setOpenCategoryRowId(null);
+  };
+
+  const handleSelectCategory = (rowId: string, category: string) => {
+    handleRowFieldChange(rowId, "category", category);
+    setOpenCategoryRowId(null);
+  };
+
+  const handleDeleteCategory = (categoryToDelete: string) => {
+    if (typeof window !== "undefined") {
+      const ok = window.confirm(`\u5220\u9664\u6807\u7b7e #${categoryToDelete}\uff1f`);
+      if (!ok) return;
+    }
+    updateReviews((prev) =>
+      prev.map((review) => ({
+        ...review,
+        rows: review.rows.map((row) =>
+          normalizeCategory(row.category) === categoryToDelete ? { ...row, category: "" } : row
+        )
+      }))
     );
     scheduleSave();
   };
@@ -565,13 +612,68 @@ export default function HomePage() {
                     >
                       <label className="flex flex-col gap-1">
                         <span className="text-xs font-medium text-slate-400">类别</span>
-                        <input
-                          className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm focus:border-blue-400 focus:outline-none"
-                          value={row.category}
-                          onChange={(event) =>
-                            handleRowFieldChange(row.id, "category", event.target.value)
-                          }
-                        />
+                        <div className="relative">
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setOpenCategoryRowId((prev) => (prev === row.id ? null : row.id))
+                            }
+                            className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-left text-xs font-medium text-slate-700 transition hover:border-blue-300"
+                          >
+                            <span>#{normalizeCategory(row.category) || UNCATEGORIZED_LABEL}</span>
+                            <span className="text-slate-400">{openCategoryRowId === row.id ? "^" : "v"}</span>
+                          </button>
+                          {openCategoryRowId === row.id && (
+                            <div className="absolute z-20 mt-1 w-full rounded-lg border border-slate-200 bg-white p-2 shadow-lg">
+                              <button
+                                type="button"
+                                onClick={() => handleCreateCategory(row.id)}
+                                className="mb-2 w-full rounded-md border border-dashed border-slate-300 px-2 py-1.5 text-left text-xs font-medium text-slate-600 transition hover:border-blue-300 hover:text-blue-600"
+                              >
+                                + 新建标签
+                              </button>
+                              <div className="flex max-h-36 flex-col gap-1 overflow-auto">
+                                <button
+                                  type="button"
+                                  onClick={() => handleSelectCategory(row.id, "")}
+                                  className={`rounded-md px-2 py-1.5 text-left text-xs transition ${
+                                    !normalizeCategory(row.category)
+                                      ? "bg-blue-50 text-blue-700"
+                                      : "text-slate-600 hover:bg-slate-50"
+                                  }`}
+                                >
+                                  #{UNCATEGORIZED_LABEL}
+                                </button>
+                                {categoryOptions.map((category) => {
+                                  const selected = normalizeCategory(row.category) === category;
+                                  return (
+                                    <div key={category} className="flex items-center gap-1">
+                                      <button
+                                        type="button"
+                                        onClick={() => handleSelectCategory(row.id, category)}
+                                        className={`flex-1 rounded-md px-2 py-1.5 text-left text-xs transition ${
+                                          selected
+                                            ? "bg-blue-50 text-blue-700"
+                                            : "text-slate-600 hover:bg-slate-50"
+                                        }`}
+                                      >
+                                        #{category}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => handleDeleteCategory(category)}
+                                        className="rounded-md px-2 py-1 text-xs text-rose-500 transition hover:bg-rose-50 hover:text-rose-600"
+                                        aria-label={`删除标签 #${category}`}
+                                      >
+                                        删除
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+                        </div>
                       </label>
                       <label className="flex flex-col gap-1">
                         <span className="text-xs font-medium text-slate-400">今天发生的事</span>
@@ -613,6 +715,16 @@ export default function HomePage() {
                                     placeholder=""
                                   />
                                 </div>
+                                <div className="flex justify-end">
+                                  <button
+                                    type="button"
+                                    className="text-base font-medium text-rose-500 hover:text-rose-600"
+                                    onClick={() => handleRemoveQa(row.id, qa.id)}
+                                    aria-label="删除 Q/A"
+                                  >
+                                    🗑
+                                  </button>
+                                </div>
                                 {qa.showAnswer && (
                                   <div className="flex flex-col gap-1 pt-1">
                                     <div className="flex items-start gap-2">
@@ -634,16 +746,6 @@ export default function HomePage() {
                                         }}
                                         placeholder=""
                                       />
-                                    </div>
-                                    <div className="flex justify-end">
-                                      <button
-                                        type="button"
-                                        className="text-base font-medium text-rose-500 hover:text-rose-600"
-                                        onClick={() => handleRemoveQa(row.id, qa.id)}
-                                        aria-label="删除 Q/A"
-                                      >
-                                        🗑
-                                      </button>
                                     </div>
                                   </div>
                                 )}
