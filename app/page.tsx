@@ -1,20 +1,74 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { QaPair, ReviewRecord, ReviewRow } from "../lib/review";
+import { KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { LogItem, QaPair, ReviewRecord, TodayLog } from "../lib/review";
 
-type SaveStatus = "ready" | "saving" | "saved" | "error" | "dirty";
+type SaveStatus = "ready" | "saving" | "saved" | "error";
+type LogColumn = "red" | "black";
+type Lang = "zh" | "en";
 
 const STORAGE_KEY = "repano_reviews";
+const LANG_KEY = "repano_lang";
 const MAX_HISTORY = 20;
 
-const statusText: Record<SaveStatus, string> = {
-  ready: "准备就绪",
-  saving: "保存中...",
-  saved: "已保存",
-  error: "保存失败（点击重试）",
-  dirty: "已修改"
-};
+const i18n = {
+  zh: {
+    topTag: "今日记录",
+    title: "复盘日志",
+    status: { ready: "就绪", saving: "保存中...", saved: "已保存", error: "保存失败（点击重试）" },
+    langZh: "中文",
+    langEn: "EN",
+    newToday: "新建今日记录",
+    collapse: "折叠",
+    updatedAt: "更新于",
+    emptyRecord: "暂无记录",
+    autosaveHint: "自动保存，停止输入 1 秒后同步",
+    deleteDay: "删除这一天",
+    expandHistory: "展开历史",
+    collapseHistory: "折叠历史",
+    emptyTip: "点击左侧日期或新建今日记录开始。",
+    todayLog: "Today Log",
+    redBoard: "红榜",
+    blackBoard: "黑榜",
+    confirmDeleteDay: (date: string) => `确认删除 ${date} 的记录吗？`,
+    itemPlaceholder: "输入一条记录，回车新增下一条",
+    reflectDeeper: "reflect deeper",
+    qaSummary: (count: number) => `已记录 ${count} 轮 QA，点击展开`,
+    deleteQa: "删除 QA",
+    qPlaceholder: "输入问题，回车进入回答",
+    aPlaceholder: "输入回答，回车新增下一轮",
+    delete: "删除",
+    addFirstQa: "+ 新增第一轮 QA"
+  },
+  en: {
+    topTag: "Today Log",
+    title: "Review Log",
+    status: { ready: "Ready", saving: "Saving...", saved: "Saved", error: "Save failed (click to retry)" },
+    langZh: "中文",
+    langEn: "EN",
+    newToday: "New today entry",
+    collapse: "Collapse",
+    updatedAt: "Updated",
+    emptyRecord: "No records yet",
+    autosaveHint: "Auto-saves 1 second after you stop typing",
+    deleteDay: "Delete this day",
+    expandHistory: "Expand history",
+    collapseHistory: "Collapse history",
+    emptyTip: "Pick a date on the left or create today to start.",
+    todayLog: "Today Log",
+    redBoard: "Red List",
+    blackBoard: "Black List",
+    confirmDeleteDay: (date: string) => `Delete record for ${date}?`,
+    itemPlaceholder: "Type one item, press Enter to add the next",
+    reflectDeeper: "reflect deeper",
+    qaSummary: (count: number) => `${count} QA rounds recorded, click to expand`,
+    deleteQa: "Delete QA",
+    qPlaceholder: "Type your question, Enter to answer",
+    aPlaceholder: "Type your answer, Enter for next round",
+    delete: "Delete",
+    addFirstQa: "+ Add first QA round"
+  }
+} as const;
 
 const randomId = () =>
   typeof crypto !== "undefined" && "randomUUID" in crypto
@@ -23,90 +77,140 @@ const randomId = () =>
 
 const todayKey = () => new Date().toISOString().slice(0, 10);
 
-const buildQaPair = (): QaPair => ({
-  id: randomId(),
-  question: "",
-  answer: "",
-  showAnswer: false,
-  order_index: 0
-});
+const buildQaPair = (index = 0): QaPair => ({ id: randomId(), question: "", answer: "", showAnswer: false, order_index: index });
+const normalizeQa = (raw: unknown, index: number): QaPair => {
+  const qa = (raw ?? {}) as Partial<QaPair>;
+  const answer = typeof qa.answer === "string" ? qa.answer : "";
+  return {
+    id: typeof qa.id === "string" ? qa.id : randomId(),
+    question: typeof qa.question === "string" ? qa.question : "",
+    answer,
+    showAnswer: typeof qa.showAnswer === "boolean" ? qa.showAnswer : Boolean(answer),
+    order_index: typeof qa.order_index === "number" ? qa.order_index : index
+  };
+};
+const syncQaOrder = (qas: QaPair[]) => qas.map((qa, idx) => ({ ...qa, order_index: idx }));
 
-const buildDefaultRows = (): ReviewRow[] => [
-  {
-    id: randomId(),
-    category: "学习",
-    context: " ",
-    solutions: " ",
-    order_index: 0,
-    qas: [buildQaPair()]
-  },
-  {
-    id: randomId(),
-    category: "生活",
-    context: " ",
-    solutions: " ",
-    order_index: 1,
-    qas: [buildQaPair()]
-  }
-];
+const buildLogItem = (index = 0, text = ""): LogItem => ({ id: randomId(), text, order_index: index, reflection_qas: [] });
+const syncLogOrder = (items: LogItem[]) => items.map((item, idx) => ({ ...item, order_index: idx }));
 
+const normalizeLogItems = (raw: unknown): LogItem[] => {
+  if (!Array.isArray(raw)) return [buildLogItem(0)];
+  const items = raw.map((entry, index) => {
+    const item = (entry ?? {}) as Partial<LogItem>;
+    const reflection = Array.isArray(item.reflection_qas)
+      ? syncQaOrder(item.reflection_qas.map((qa, qaIndex) => normalizeQa(qa, qaIndex)))
+      : [];
+    return {
+      id: typeof item.id === "string" ? item.id : randomId(),
+      text: typeof item.text === "string" ? item.text : "",
+      order_index: typeof item.order_index === "number" ? item.order_index : index,
+      reflection_qas: reflection
+    };
+  });
+  return syncLogOrder(items.length ? items : [buildLogItem(0)]);
+};
+
+const emptyTodayLog = (): TodayLog => ({ red: [buildLogItem(0)], black: [buildLogItem(0)] });
 const buildReview = (date: string): ReviewRecord => ({
-  id: randomId(),
-  date,
-  created_at: new Date().toISOString(),
-  updated_at: new Date().toISOString(),
-  rows: buildDefaultRows()
+  id: randomId(), date, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), today_log: emptyTodayLog()
 });
 
-const formatHeaderDate = (dateStr: string) =>
-  new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    weekday: "short"
-  }).format(new Date(dateStr));
+const normalizeReview = (raw: unknown): ReviewRecord => {
+  const input = (raw ?? {}) as Partial<ReviewRecord> & {
+    reflection?: { qas?: unknown[]; whatHappened?: string; why?: string; optimization?: string };
+    rows?: Array<{ context?: string; qas?: Array<{ question?: string }>; solutions?: string }>;
+  };
 
-const sortAndLimit = (list: ReviewRecord[]) =>
-  [...list]
-    .sort((a, b) => b.date.localeCompare(a.date))
-    .slice(0, MAX_HISTORY);
+  const dailyLogFallback =
+    typeof input.daily_log === "string"
+      ? input.daily_log
+      : Array.isArray(input.rows)
+      ? input.rows.map((row) => (typeof row.context === "string" ? row.context : "")).filter(Boolean).join("\n")
+      : "";
 
-const normalizeCategory = (value: string) => value.trim().replace(/^#+/, "");
-const UNCATEGORIZED_LABEL = "\u672a\u5206\u7c7b";
+  const legacyWhat =
+    typeof input.reflection?.whatHappened === "string"
+      ? input.reflection.whatHappened
+      : Array.isArray(input.rows)
+      ? input.rows.flatMap((row) => (Array.isArray(row.qas) ? row.qas : [])).map((qa) => (typeof qa.question === "string" ? qa.question : "")).filter(Boolean).join("\n")
+      : "";
+
+  const legacyWhy = typeof input.reflection?.why === "string" ? input.reflection.why : "";
+  const legacyOptimization =
+    typeof input.reflection?.optimization === "string"
+      ? input.reflection.optimization
+      : Array.isArray(input.rows)
+      ? input.rows.map((row) => (typeof row.solutions === "string" ? row.solutions : "")).filter(Boolean).join("\n")
+      : "";
+
+  const legacyReflectionQas = Array.isArray(input.reflection?.qas)
+    ? syncQaOrder(input.reflection.qas.map((qa, index) => normalizeQa(qa, index)))
+    : [];
+
+  const todayLogInput = input.today_log as Partial<TodayLog> | undefined;
+  const redItems = normalizeLogItems(todayLogInput?.red);
+  const blackItems = normalizeLogItems(todayLogInput?.black);
+
+  if (!todayLogInput?.red && dailyLogFallback.trim()) redItems[0] = { ...redItems[0], text: dailyLogFallback };
+
+  if (!todayLogInput?.red && (legacyReflectionQas.length || legacyWhat || legacyWhy || legacyOptimization)) {
+    const legacyQuestion = [legacyWhat, legacyWhy].filter(Boolean).join("\n").trim();
+    const mergedLegacyQas = legacyReflectionQas.length
+      ? legacyReflectionQas
+      : [{ ...buildQaPair(0), question: legacyQuestion, answer: legacyOptimization, showAnswer: Boolean(legacyOptimization) }];
+    redItems[0] = { ...redItems[0], reflection_qas: syncQaOrder(mergedLegacyQas) };
+  }
+
+  return {
+    id: typeof input.id === "string" ? input.id : randomId(),
+    date: typeof input.date === "string" ? input.date : todayKey(),
+    created_at: typeof input.created_at === "string" ? input.created_at : new Date().toISOString(),
+    updated_at: typeof input.updated_at === "string" ? input.updated_at : new Date().toISOString(),
+    today_log: { red: syncLogOrder(redItems), black: syncLogOrder(blackItems) }
+  };
+};
+
+const sortAndLimit = (list: ReviewRecord[]) => [...list].sort((a, b) => b.date.localeCompare(a.date)).slice(0, MAX_HISTORY);
+const hasItemReflectionContent = (item: LogItem) => item.reflection_qas.some((qa) => qa.question.trim() || qa.answer.trim());
 
 export default function HomePage() {
+  const [lang, setLang] = useState<Lang>("zh");
   const [reviews, setReviews] = useState<ReviewRecord[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [status, setStatus] = useState<SaveStatus>("ready");
+  const [isHistoryCollapsed, setIsHistoryCollapsed] = useState(false);
+  const [expandedItemIds, setExpandedItemIds] = useState<Record<string, boolean>>({});
+
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestReviews = useRef<ReviewRecord[]>([]);
   const currentIdRef = useRef<string | null>(null);
-  const [isHistoryCollapsed, setIsHistoryCollapsed] = useState(false);
-  const [openCategoryRowId, setOpenCategoryRowId] = useState<string | null>(null);
+  const pendingFocusRef = useRef<{ column: LogColumn; itemId: string } | null>(null);
 
-  const currentReview = useMemo(
-    () => reviews.find((item) => item.id === currentId) ?? null,
-    [reviews, currentId]
-  );
-  const categoryOptions = useMemo(() => {
-    const seen = new Set<string>();
-    for (const review of reviews) {
-      for (const row of review.rows) {
-        const category = normalizeCategory(row.category);
-        if (category) {
-          seen.add(category);
-        }
-      }
+  const t = i18n[lang];
+  const formatHeaderDate = (dateStr: string) => {
+    const date = new Date(dateStr);
+    if (lang === "zh") {
+      const d = new Intl.DateTimeFormat("zh-CN", {
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit"
+      }).format(date);
+      const w = new Intl.DateTimeFormat("zh-CN", { weekday: "short" }).format(date);
+      return `${d}, ${w}`;
     }
-    return [...seen];
-  }, [reviews]);
-
-  const toggleHistoryCollapsed = () => {
-    setIsHistoryCollapsed((prev) => !prev);
+    return new Intl.DateTimeFormat("en-US", {
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+      weekday: "short"
+    }).format(date);
   };
 
+  const currentReview = useMemo(() => reviews.find((item) => item.id === currentId) ?? null, [reviews, currentId]);
+
   const setReviewsDirect = (next: ReviewRecord[]) => {
-    const sorted = sortAndLimit(next);
+    const sorted = sortAndLimit(next.map(normalizeReview));
     latestReviews.current = sorted;
     setReviews(sorted);
   };
@@ -114,7 +218,7 @@ export default function HomePage() {
   const updateReviews = (updater: (prev: ReviewRecord[]) => ReviewRecord[]) => {
     setReviews((prev) => {
       const updated = updater(prev);
-      const sorted = sortAndLimit(updated);
+      const sorted = sortAndLimit(updated.map(normalizeReview));
       latestReviews.current = sorted;
       return sorted;
     });
@@ -122,43 +226,40 @@ export default function HomePage() {
 
   const persistLocally = (list: ReviewRecord[]) => {
     if (typeof window === "undefined") return;
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(sortAndLimit(list)));
-    } catch (error) {
-      console.error("保存失败", error);
-      setStatus("error");
-    }
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(sortAndLimit(list))); }
+    catch (error) { console.error("Local save failed", error); setStatus("error"); }
   };
 
   const saveToSupabase = async (payload: ReviewRecord[]) => {
     const response = await fetch("/api/reviews", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reviews: payload })
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviews: payload })
     });
     if (!response.ok) {
       const failure = await response.text();
-      throw new Error(failure || "Supabase 写入失败");
+      throw new Error(failure || "Supabase write failed");
     }
   };
-
   const persistNow = async () => {
     if (typeof window === "undefined") return;
     if (!latestReviews.current.length) return;
+
     const now = new Date().toISOString();
     const updated = latestReviews.current.map((review) =>
       review.id === currentIdRef.current ? { ...review, updated_at: now } : review
     );
     const payload = sortAndLimit(updated);
+
     setReviewsDirect(payload);
     persistLocally(payload);
-    try {
-      await saveToSupabase(payload);
-      setStatus("saved");
-    } catch (error) {
-      console.error("Supabase 写入失败", error);
-      setStatus("error");
-    }
+
+    try { await saveToSupabase(payload); setStatus("saved"); }
+    catch (error) { console.error("Supabase write failed", error); setStatus("error"); }
+  };
+
+  const scheduleSave = () => {
+    setStatus("saving");
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => { void persistNow(); }, 1000);
   };
 
   const loadLocalReviews = (): ReviewRecord[] => {
@@ -166,49 +267,38 @@ export default function HomePage() {
     const raw = window.localStorage.getItem(STORAGE_KEY);
     if (!raw) return [];
     try {
-      return JSON.parse(raw);
+      const parsed = JSON.parse(raw) as unknown[];
+      return Array.isArray(parsed) ? parsed.map(normalizeReview) : [];
     } catch (error) {
-      console.error("读取本地数据失败", error);
+      console.error("Local load failed", error);
       return [];
     }
   };
 
   const hydrateReviewList = (source: ReviewRecord[]) => {
+    const normalized = sortAndLimit(source.map(normalizeReview));
     const today = todayKey();
-    const todayReview = source.find((item) => item.date === today);
+    const todayReview = normalized.find((item) => item.date === today);
+
     if (todayReview) {
-      setReviewsDirect(source);
+      setReviewsDirect(normalized);
       setCurrentId(todayReview.id);
-      persistLocally(source);
-      return source;
+      persistLocally(normalized);
+      return;
     }
-    const next = [buildReview(today), ...source];
+
+    const next = [buildReview(today), ...normalized].slice(0, MAX_HISTORY);
     setReviewsDirect(next);
     setCurrentId(next[0]?.id ?? null);
     persistLocally(next);
-    return next;
-  };
-
-  const scheduleSave = () => {
-    setStatus("saving");
-    if (saveTimer.current) {
-      clearTimeout(saveTimer.current);
-    }
-    saveTimer.current = setTimeout(() => {
-      void persistNow();
-    }, 1000);
   };
 
   const handleNewReview = () => {
     const today = todayKey();
-    if (reviews[0]?.date === today) {
-      setCurrentId(reviews[0].id);
-      return;
-    }
-    const next = [buildReview(today), ...reviews.filter((item) => item.date !== today)].slice(
-      0,
-      MAX_HISTORY
-    );
+    const existed = reviews.find((item) => item.date === today);
+    if (existed) { setCurrentId(existed.id); return; }
+
+    const next = [buildReview(today), ...reviews].slice(0, MAX_HISTORY);
     setReviewsDirect(next);
     setCurrentId(next[0]?.id ?? null);
     setStatus("saved");
@@ -217,12 +307,7 @@ export default function HomePage() {
 
   const handleDeleteCurrentReview = () => {
     if (!currentReview) return;
-    if (
-      typeof window !== "undefined" &&
-      !window.confirm(`确认删除 ${currentReview.date} 的复盘吗？`)
-    ) {
-      return;
-    }
+    if (typeof window !== "undefined" && !window.confirm(t.confirmDeleteDay(currentReview.date))) return;
 
     const remaining = reviews.filter((item) => item.id !== currentReview.id);
     const nextList = remaining.length ? remaining : [buildReview(todayKey())];
@@ -235,205 +320,141 @@ export default function HomePage() {
 
     setStatus("saving");
     void (async () => {
-      try {
-        await saveToSupabase(sortAndLimit(nextList));
-        setStatus("saved");
-      } catch (error) {
-        console.error("Supabase 鍐欏叆澶辫触", error);
-        setStatus("error");
-      }
+      try { await saveToSupabase(sortAndLimit(nextList)); setStatus("saved"); }
+      catch (error) { console.error("Supabase delete sync failed", error); setStatus("error"); }
     })();
   };
 
-  const handleRowFieldChange = (
-    rowId: string,
-    field: "category" | "context" | "solutions",
-    value: string
-  ) => {
+  const updateCurrentReview = (updater: (review: ReviewRecord) => ReviewRecord) => {
     if (!currentId) return;
-    updateReviews((prev) =>
-      prev.map((review) => {
-        if (review.id !== currentId) return review;
-        const rows = review.rows.map((row) =>
-          row.id === rowId ? { ...row, [field]: value } : row
-        );
-        return { ...review, rows };
-      })
-    );
+    updateReviews((prev) => prev.map((review) => (review.id === currentId ? updater(review) : review)));
     scheduleSave();
   };
 
-  const handleCreateCategory = (rowId: string) => {
-    if (typeof window === "undefined") return;
-    const raw = window.prompt("\u65b0\u5efa\u6807\u7b7e\uff08\u4e0d\u7528\u8f93\u5165#\uff09", "");
-    if (raw === null) return;
-    const nextCategory = normalizeCategory(raw);
-    if (!nextCategory) return;
-    handleRowFieldChange(rowId, "category", nextCategory);
-    setOpenCategoryRowId(null);
+  const upsertItem = (review: ReviewRecord, column: LogColumn, itemId: string, updater: (item: LogItem) => LogItem) => {
+    const nextColumn = syncLogOrder(review.today_log[column].map((item) => (item.id === itemId ? updater(item) : item)));
+    return { ...review, today_log: { ...review.today_log, [column]: nextColumn } };
   };
 
-  const handleSelectCategory = (rowId: string, category: string) => {
-    handleRowFieldChange(rowId, "category", category);
-    setOpenCategoryRowId(null);
+  const handleItemTextChange = (column: LogColumn, itemId: string, value: string) => {
+    updateCurrentReview((review) => upsertItem(review, column, itemId, (item) => ({ ...item, text: value })));
   };
 
-  const handleDeleteCategory = (categoryToDelete: string) => {
-    if (typeof window !== "undefined") {
-      const ok = window.confirm(`\u5220\u9664\u6807\u7b7e #${categoryToDelete}\uff1f`);
-      if (!ok) return;
-    }
-    updateReviews((prev) =>
-      prev.map((review) => ({
-        ...review,
-        rows: review.rows.map((row) =>
-          normalizeCategory(row.category) === categoryToDelete ? { ...row, category: "" } : row
-        )
-      }))
-    );
-    scheduleSave();
+  const handleAddItem = (column: LogColumn, afterItemId: string) => {
+    updateCurrentReview((review) => {
+      const list = [...review.today_log[column]];
+      const index = list.findIndex((item) => item.id === afterItemId);
+      list.splice(index + 1, 0, buildLogItem(list.length));
+      return { ...review, today_log: { ...review.today_log, [column]: syncLogOrder(list) } };
+    });
   };
 
-  const handleAddRow = (afterRowId: string) => {
-    if (!currentId) return;
-    updateReviews((prev) =>
-      prev.map((review) => {
-        if (review.id !== currentId) return review;
-        const index = review.rows.findIndex((row) => row.id === afterRowId);
-        const newRow: ReviewRow = {
-          id: randomId(),
-          category: "",
-          context: "- ",
-          solutions: "- ",
-          order_index: review.rows.length,
-          qas: [buildQaPair()]
-        };
-        const rows = [...review.rows];
-        rows.splice(index + 1, 0, newRow);
-        return {
-          ...review,
-          rows: rows.map((row, idx) => ({ ...row, order_index: idx }))
-        };
-      })
-    );
-    scheduleSave();
+  const handleDeleteItem = (column: LogColumn, itemId: string) => {
+    updateCurrentReview((review) => {
+      const list = [...review.today_log[column]];
+      if (list.length <= 1) return review;
+
+      const index = list.findIndex((item) => item.id === itemId);
+      if (index < 0) return review;
+
+      const fallback = list[index - 1] ?? list[index + 1] ?? null;
+      if (fallback) pendingFocusRef.current = { column, itemId: fallback.id };
+
+      list.splice(index, 1);
+      return { ...review, today_log: { ...review.today_log, [column]: syncLogOrder(list) } };
+    });
   };
 
-  const handleDeleteRow = (rowId: string) => {
-    if (!currentId) return;
-    const rowCount = currentReview?.rows.length ?? 0;
-    if (rowCount <= 1) return;
-    if (typeof window !== "undefined" && !window.confirm("确认删除这一行？")) {
+  const handleItemKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>, column: LogColumn, itemId: string) => {
+    if (event.key === "Enter" && !event.shiftKey) {
+      event.preventDefault();
+      handleAddItem(column, itemId);
       return;
     }
-    updateReviews((prev) =>
-      prev.map((review) => {
-        if (review.id !== currentId) return review;
-        const filtered = review.rows.filter((row) => row.id !== rowId);
-        return {
-          ...review,
-          rows: filtered.map((row, idx) => ({ ...row, order_index: idx }))
-        };
-      })
-    );
-    scheduleSave();
+
+    if (event.key === "Backspace" && !event.shiftKey) {
+      const value = event.currentTarget.value;
+      if (!value.trim()) {
+        event.preventDefault();
+        handleDeleteItem(column, itemId);
+      }
+    }
   };
 
-  const syncQaOrder = (qas: QaPair[]) => qas.map((qa, idx) => ({ ...qa, order_index: idx }));
+  const handleToggleReflection = (column: LogColumn, itemId: string) => {
+    const isExpanded = Boolean(expandedItemIds[itemId]);
+    if (isExpanded) { setExpandedItemIds((prev) => ({ ...prev, [itemId]: false })); return; }
 
-  const handleQaQuestionChange = (rowId: string, qaId: string, value: string) => {
-    if (!currentId) return;
-    updateReviews((prev) =>
-      prev.map((review) => {
-        if (review.id !== currentId) return review;
-        const rows = review.rows.map((row) => {
-          if (row.id !== rowId) return row;
-          const qas = row.qas.map((qa) => (qa.id === qaId ? { ...qa, question: value } : qa));
-          return { ...row, qas };
-        });
-        return { ...review, rows };
-      })
+    updateCurrentReview((review) =>
+      upsertItem(review, column, itemId, (item) => ({
+        ...item,
+        reflection_qas: item.reflection_qas.length ? item.reflection_qas : [buildQaPair(0)]
+      }))
     );
-    scheduleSave();
+    setExpandedItemIds((prev) => ({ ...prev, [itemId]: true }));
   };
 
-  const handleQaAnswerChange = (rowId: string, qaId: string, value: string) => {
-    if (!currentId) return;
-    updateReviews((prev) =>
-      prev.map((review) => {
-        if (review.id !== currentId) return review;
-        const rows = review.rows.map((row) => {
-          if (row.id !== rowId) return row;
-          const qas = row.qas.map((qa) =>
-            qa.id === qaId ? { ...qa, answer: value, showAnswer: true } : qa
-          );
-          return { ...row, qas };
-        });
-        return { ...review, rows };
-      })
+  const handleQaQuestionChange = (column: LogColumn, itemId: string, qaId: string, value: string) => {
+    updateCurrentReview((review) =>
+      upsertItem(review, column, itemId, (item) => ({
+        ...item,
+        reflection_qas: syncQaOrder(item.reflection_qas.map((qa) => (qa.id === qaId ? { ...qa, question: value } : qa)))
+      }))
     );
-    scheduleSave();
   };
 
-  const handleShowAnswer = (rowId: string, qaId: string) => {
-    if (!currentId) return;
-    updateReviews((prev) =>
-      prev.map((review) => {
-        if (review.id !== currentId) return review;
-        const rows = review.rows.map((row) => {
-          if (row.id !== rowId) return row;
-          const qas = row.qas.map((qa) =>
-            qa.id === qaId ? { ...qa, showAnswer: true } : qa
-          );
-          return { ...row, qas };
-        });
-        return { ...review, rows };
-      })
+  const handleQaAnswerChange = (column: LogColumn, itemId: string, qaId: string, value: string) => {
+    updateCurrentReview((review) =>
+      upsertItem(review, column, itemId, (item) => ({
+        ...item,
+        reflection_qas: syncQaOrder(item.reflection_qas.map((qa) => (qa.id === qaId ? { ...qa, answer: value, showAnswer: true } : qa)))
+      }))
     );
-    scheduleSave();
   };
 
-  const handleAddQa = (rowId: string) => {
-    if (!currentId) return;
-    updateReviews((prev) =>
-      prev.map((review) => {
-        if (review.id !== currentId) return review;
-        const rows = review.rows.map((row) => {
-          if (row.id !== rowId) return row;
-          const nextQa: QaPair = { ...buildQaPair(), order_index: row.qas.length };
-          return {
-            ...row,
-            qas: syncQaOrder([...row.qas, nextQa])
-          };
-        });
-        return { ...review, rows };
-      })
+  const handleShowAnswer = (column: LogColumn, itemId: string, qaId: string) => {
+    updateCurrentReview((review) =>
+      upsertItem(review, column, itemId, (item) => ({
+        ...item,
+        reflection_qas: syncQaOrder(item.reflection_qas.map((qa) => (qa.id === qaId ? { ...qa, showAnswer: true } : qa)))
+      }))
     );
-    scheduleSave();
   };
 
-  const handleRemoveQa = (rowId: string, qaId: string) => {
-    if (!currentId) return;
-    updateReviews((prev) =>
-      prev.map((review) => {
-        if (review.id !== currentId) return review;
-        const rows = review.rows.map((row) => {
-          if (row.id !== rowId) return row;
-          const filtered = row.qas.filter((qa) => qa.id !== qaId);
-          const normalized = filtered.length ? filtered : [buildQaPair()];
-          return {
-            ...row,
-            qas: syncQaOrder(normalized)
-          };
-        });
-        return { ...review, rows };
-      })
+  const handleAddQa = (column: LogColumn, itemId: string) => {
+    updateCurrentReview((review) =>
+      upsertItem(review, column, itemId, (item) => ({
+        ...item,
+        reflection_qas: syncQaOrder([...item.reflection_qas, buildQaPair(item.reflection_qas.length)])
+      }))
     );
-    scheduleSave();
+  };
+
+  const handleDeleteReflection = (column: LogColumn, itemId: string) => {
+    updateCurrentReview((review) => upsertItem(review, column, itemId, (item) => ({ ...item, reflection_qas: [] })));
+    setExpandedItemIds((prev) => ({ ...prev, [itemId]: false }));
+  };
+
+  const handleRemoveQa = (column: LogColumn, itemId: string, qaId: string) => {
+    updateCurrentReview((review) =>
+      upsertItem(review, column, itemId, (item) => ({ ...item, reflection_qas: syncQaOrder(item.reflection_qas.filter((qa) => qa.id !== qaId)) }))
+    );
   };
 
   useEffect(() => {
     if (typeof window === "undefined") return;
+    const raw = window.localStorage.getItem(LANG_KEY);
+    if (raw === "zh" || raw === "en") setLang(raw);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(LANG_KEY, lang);
+  }, [lang]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
     const stored = loadLocalReviews();
     hydrateReviewList(stored);
     setStatus("saved");
@@ -441,16 +462,14 @@ export default function HomePage() {
     const syncRemote = async () => {
       try {
         const response = await fetch("/api/reviews");
-        if (!response.ok) {
-          throw new Error("Supabase 读取失败");
-        }
+        if (!response.ok) throw new Error("Supabase read failed");
         const data = (await response.json()) as { reviews: ReviewRecord[] };
         if (Array.isArray(data?.reviews)) {
-          hydrateReviewList(data.reviews);
+          hydrateReviewList(data.reviews.map(normalizeReview));
           setStatus("saved");
         }
       } catch (error) {
-        console.error("Supabase 读取失败", error);
+        console.error("Supabase read failed", error);
       }
     };
 
@@ -458,110 +477,242 @@ export default function HomePage() {
   }, []);
 
   useEffect(() => {
-    return () => {
-      if (saveTimer.current) {
-        clearTimeout(saveTimer.current);
-      }
-    };
+    return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
   }, []);
 
-  useEffect(() => {
-    currentIdRef.current = currentId;
-  }, [currentId]);
+  useEffect(() => { currentIdRef.current = currentId; }, [currentId]);
+  useEffect(() => { latestReviews.current = reviews; }, [reviews]);
 
   useEffect(() => {
-    latestReviews.current = reviews;
+    const pending = pendingFocusRef.current;
+    if (!pending) return;
+    const target = document.querySelector(`[data-column="${pending.column}"][data-item-id="${pending.itemId}"]`) as HTMLTextAreaElement | null;
+    if (target) {
+      target.focus();
+      target.setSelectionRange(target.value.length, target.value.length);
+      pendingFocusRef.current = null;
+    }
   }, [reviews]);
 
   const badgeClass =
-    status === "saving"
-      ? "bg-amber-100 text-amber-700"
-      : status === "saved"
-      ? "bg-emerald-100 text-emerald-900"
-      : status === "error"
-      ? "bg-rose-100 text-rose-700 hover:bg-rose-200"
-      : "bg-slate-100 text-slate-600";
+    status === "saving" ? "bg-amber-100 text-amber-700" :
+    status === "saved" ? "bg-emerald-100 text-emerald-900" :
+    status === "error" ? "bg-rose-100 text-rose-700 hover:bg-rose-200 cursor-pointer" :
+    "bg-slate-100 text-slate-600";
 
-  const mainGridClass = isHistoryCollapsed
-    ? "grid gap-8 lg:grid-cols-[1fr]"
-    : "grid gap-8 lg:grid-cols-[auto_1fr]";
+  const mainGridClass = isHistoryCollapsed ? "grid gap-5 lg:grid-cols-[1fr]" : "grid gap-5 lg:grid-cols-[280px_1fr]";
 
-  const historyToggleMessage = isHistoryCollapsed
-    ? "历史复盘面板已折叠，点击按钮可再次查看历史记录。"
-    : "历史复盘列表正在显示，折叠后可为右侧输入争取更多空间。";
+  const renderLogColumn = (column: LogColumn, title: string, titleClass: string, textClass: string) => {
+    if (!currentReview) return null;
+    const items = [...currentReview.today_log[column]].sort((a, b) => a.order_index - b.order_index);
+
+    return (
+      <section className="rounded-2xl border border-slate-200 bg-white p-4">
+        <h3 className={`mb-3 text-lg font-semibold ${titleClass}`}>{title}</h3>
+        <ul className={`list-disc space-y-3 pl-5 marker:text-current marker:text-xl ${textClass}`}>
+          {items.map((item) => {
+            const hasReflection = hasItemReflectionContent(item);
+            const reflectionVisible = Boolean(expandedItemIds[item.id]);
+
+            return (
+              <li key={item.id} className="text-base">
+                <div className="flex items-start gap-2">
+                  <textarea
+                    value={item.text}
+                    onChange={(event) => handleItemTextChange(column, item.id, event.target.value)}
+                    onKeyDown={(event) => handleItemKeyDown(event, column, item.id)}
+                    data-column={column}
+                    data-item-id={item.id}
+                    className={`min-h-[28px] flex-1 resize-none overflow-hidden border-0 bg-transparent p-0 leading-7 outline-none focus:ring-0 ${textClass}`}
+                    placeholder={t.itemPlaceholder}
+                  />
+                  <button
+                    type="button"
+                    title={t.reflectDeeper}
+                    className="h-7 w-7 rounded-full border border-slate-300 text-sm font-semibold text-slate-600 transition hover:border-blue-300 hover:text-blue-600"
+                    onClick={() => handleToggleReflection(column, item.id)}
+                  >
+                    {reflectionVisible ? "-" : "+"}
+                  </button>
+                </div>
+
+                {!reflectionVisible && hasReflection && (
+                  <button
+                    type="button"
+                    className="mt-2 rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-1 text-xs text-slate-600 transition hover:border-slate-300 hover:bg-slate-100"
+                    onClick={() => handleToggleReflection(column, item.id)}
+                  >
+                    {t.qaSummary(item.reflection_qas.length)}
+                  </button>
+                )}
+
+                {reflectionVisible && (
+                  <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="mb-2 flex items-center justify-end gap-2">
+                      <button
+                        type="button"
+                        className="inline-flex h-10 w-10 items-center justify-center rounded-md text-rose-500 transition hover:bg-rose-50 hover:text-rose-600"
+                        onClick={() => handleDeleteReflection(column, item.id)}
+                        aria-label={t.deleteQa}
+                        title={t.deleteQa}
+                      >
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-6 w-6" aria-hidden="true">
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 7h16" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M10 11v6" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M14 11v6" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12" />
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                        </svg>
+                      </button>
+                    </div>
+
+                    <div className="flex flex-col gap-2">
+                      {[...item.reflection_qas]
+                        .sort((a, b) => a.order_index - b.order_index)
+                        .map((qa) => (
+                          <div key={qa.id} className="rounded-lg border border-dashed border-slate-200 bg-white p-2">
+                            <div className="flex items-start gap-2">
+                              <span className="mt-1 text-xs font-semibold text-red-600">Q:</span>
+                              <textarea
+                                className="min-h-[52px] flex-1 rounded-md border border-slate-200 px-2 py-1 text-sm leading-relaxed outline-none focus:border-blue-400"
+                                value={qa.question}
+                                onChange={(event) => handleQaQuestionChange(column, item.id, qa.id, event.target.value)}
+                                onKeyDown={(event) => {
+                                  if (event.key === "Enter" && !event.shiftKey) {
+                                    event.preventDefault();
+                                    handleShowAnswer(column, item.id, qa.id);
+                                  }
+                                }}
+                                placeholder={t.qPlaceholder}
+                              />
+                              <button
+                                type="button"
+                                className="rounded-md px-2 py-1 text-xs text-rose-500 transition hover:bg-rose-50 hover:text-rose-600"
+                                onClick={() => handleRemoveQa(column, item.id, qa.id)}
+                              >
+                                {t.delete}
+                              </button>
+                            </div>
+
+                            {qa.showAnswer && (
+                              <div className="mt-2 flex items-start gap-2">
+                                <span className="mt-1 text-xs font-semibold text-blue-600">A:</span>
+                                <textarea
+                                  className="min-h-[52px] flex-1 rounded-md border border-slate-200 px-2 py-1 text-sm leading-relaxed outline-none focus:border-blue-400"
+                                  value={qa.answer}
+                                  onChange={(event) => handleQaAnswerChange(column, item.id, qa.id, event.target.value)}
+                                  onKeyDown={(event) => {
+                                    if (event.key === "Enter" && !event.shiftKey) {
+                                      event.preventDefault();
+                                      handleAddQa(column, item.id);
+                                    }
+                                  }}
+                                  placeholder={t.aPlaceholder}
+                                />
+                              </div>
+                            )}
+                          </div>
+                        ))}
+
+                      {item.reflection_qas.length === 0 && (
+                        <button
+                          type="button"
+                          className="self-start rounded-md border border-slate-200 bg-white px-2.5 py-1 text-xs text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+                          onClick={() => handleAddQa(column, item.id)}
+                        >
+                          {t.addFirstQa}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+      </section>
+    );
+  };
 
   return (
     <div className="min-h-screen bg-[#f5f5f7] text-[#0f172a]">
-      <div className="mx-auto flex max-w-7xl flex-col gap-8 px-6 py-10">
+      <div className="mx-auto flex max-w-7xl flex-col gap-5 px-6 py-6">
         <header className="flex flex-col gap-1">
-          <p className="text-xs uppercase tracking-[0.3em] text-slate-500">只写今日 · 每日一表</p>
-          <div className="flex flex-wrap items-baseline justify-between gap-3">
-            <h1 className="text-3xl font-semibold leading-tight">复盘日志</h1>
-              <span className={`rounded-full px-4 py-1 text-sm font-semibold ${badgeClass}`} onClick={status === "error" ? () => void persistNow() : undefined}>
-              {statusText[status]}
-            </span>
+          <p className="text-xs uppercase tracking-[0.3em] text-slate-500">{t.topTag}</p>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h1 className="text-2xl font-semibold leading-tight">{t.title}</h1>
+            <div className="flex items-center gap-2">
+              <div className="inline-flex rounded-full border border-slate-200 bg-white p-0.5 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setLang("zh")}
+                  className={`rounded-full px-2.5 py-1 transition ${lang === "zh" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"}`}
+                >
+                  {t.langZh}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setLang("en")}
+                  className={`rounded-full px-2.5 py-1 transition ${lang === "en" ? "bg-slate-900 text-white" : "text-slate-600 hover:bg-slate-100"}`}
+                >
+                  {t.langEn}
+                </button>
+              </div>
+              <span
+                className={`rounded-full px-3 py-0.5 text-xs font-semibold ${badgeClass}`}
+                onClick={status === "error" ? () => void persistNow() : undefined}
+              >
+                {t.status[status]}
+              </span>
+            </div>
           </div>
         </header>
 
         <main className={mainGridClass}>
           {!isHistoryCollapsed && (
-            <section className="rounded-2xl bg-white p-8 shadow-lg shadow-slate-200">
+            <section className="rounded-2xl bg-white p-5 shadow-lg shadow-slate-200">
               <div className="mb-4 flex items-center justify-between">
-                <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1 rounded-2xl bg-gradient-to-r from-blue-600 to-indigo-500 px-4 py-1.5 text-sm font-semibold text-white shadow-lg shadow-blue-200 transition hover:from-blue-500 hover:to-indigo-400 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-indigo-400"
-                    onClick={handleNewReview}
-                  >
-                    <span className="text-base leading-none">+</span>
-                    <span className="whitespace-nowrap">新建今日复盘</span>
-                  </button>
-                  <button
-                    type="button"
-                    className="inline-flex items-center gap-1 rounded-2xl border border-slate-200 px-4 py-1.5 text-xs font-semibold uppercase tracking-wide text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-slate-300"
-                    onClick={toggleHistoryCollapsed}
-                  >
-                    <span className="translate-y-px text-sm leading-none">⌄</span>
-                    <span>收起历史面板</span>
-                  </button>
-                </div>
-              </div>
-              <div className="flex flex-col gap-3">
-              {reviews.length === 0 && (
-                <p className="text-sm text-slate-500">尚未写任何复盘，点击右上角可启动今日表格。</p>
-              )}
-              {reviews.map((review) => (
                 <button
-                  key={review.id}
                   type="button"
-                  onClick={() => {
-                    setCurrentId(review.id);
-                  }}
-                  className={`text-left transition hover:border-blue-400 ${
-                    review.id === currentId
-                      ? "border border-blue-400 bg-blue-50"
-                      : "border border-slate-200 bg-slate-50"
-                  } focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400`}
+                  className="inline-flex items-center gap-1 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-500 px-3 py-1.5 text-sm font-semibold text-white shadow-lg shadow-blue-200 transition hover:from-blue-500 hover:to-indigo-400"
+                  onClick={handleNewReview}
                 >
-                  <div className="flex flex-col gap-0.5 p-3">
-                      <span className="text-sm font-semibold">{review.date.replace(/-/g, ".")}</span>
-                    <span className="text-xs text-slate-500">
-                      更新于 {new Date(review.updated_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" })}
-                    </span>
-                    <span className="text-xs text-slate-500">行数 {review.rows.length}</span>
-                  </div>
+                  <span className="text-base leading-none">+</span>
+                  <span>{t.newToday}</span>
                 </button>
-              ))}
-            </div>
-            <p className="mt-4 text-xs text-slate-400">历史列表按日期降序，仅展示最近 20 条。</p>
+                <button
+                  type="button"
+                  className="rounded-xl border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+                  onClick={() => setIsHistoryCollapsed(true)}
+                >
+                  {t.collapse}
+                </button>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                {reviews.map((review) => (
+                  <button
+                    key={review.id}
+                    type="button"
+                    onClick={() => setCurrentId(review.id)}
+                    className={`rounded-xl border p-3 text-left transition ${review.id === currentId ? "border-blue-400 bg-blue-50" : "border-slate-200 bg-slate-50 hover:border-slate-300"}`}
+                  >
+                    <div className="text-sm font-semibold">{review.date.replace(/-/g, ".")}</div>
+                    <div className="mt-1 text-xs text-slate-500">
+                      {t.updatedAt}{" "}
+                      {new Date(review.updated_at).toLocaleTimeString(lang === "zh" ? "zh-CN" : "en-US", { hour: "2-digit", minute: "2-digit" })}
+                    </div>
+                  </button>
+                ))}
+              </div>
             </section>
           )}
 
-          <section className="flex min-h-[560px] flex-col gap-4 rounded-2xl bg-white p-8 shadow-lg shadow-slate-200">
-            <div className="flex items-center justify-between gap-2">
+          <section className="flex min-h-[560px] flex-col gap-4 rounded-2xl bg-white p-6 shadow-lg shadow-slate-200">
+            <div className="flex items-center justify-between gap-3">
               <div>
-                <p className="text-lg font-semibold">{currentReview ? formatHeaderDate(currentReview.date) : "尚未创建复盘"}</p>
-                <p className="text-sm text-slate-500">自动保存 · 失焦或 1 秒完成</p>
+                <p className="text-lg font-semibold">{currentReview ? formatHeaderDate(currentReview.date) : t.emptyRecord}</p>
+                <p className="text-sm text-slate-500">{t.autosaveHint}</p>
               </div>
               <div className="flex items-center gap-2">
                 {currentReview && (
@@ -570,231 +721,32 @@ export default function HomePage() {
                     className="rounded-full border border-rose-200 px-3 py-1 text-xs font-medium text-rose-600 transition hover:border-rose-300 hover:bg-rose-50"
                     onClick={handleDeleteCurrentReview}
                   >
-                    删除这一天
+                    {t.deleteDay}
                   </button>
                 )}
-                <div className="rounded-full bg-slate-100 px-4 py-1 text-sm text-slate-600">
-                  {currentReview ? new Date(currentReview.updated_at).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }) : ""}
+                <button
+                  type="button"
+                  className="rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
+                  onClick={() => setIsHistoryCollapsed((prev) => !prev)}
+                >
+                  {isHistoryCollapsed ? t.expandHistory : t.collapseHistory}
+                </button>
+              </div>
+            </div>
+
+            {!currentReview && <p className="text-sm text-slate-500">{t.emptyTip}</p>}
+
+            {currentReview && (
+              <section className="rounded-2xl border border-slate-200 bg-slate-50/70 p-5">
+                <div className="mb-4 flex items-center justify-between">
+                  <h2 className="text-xl font-semibold text-slate-800">{t.todayLog}</h2>
                 </div>
-              </div>
-            </div>
-
-            <div className="flex items-center justify-between gap-3 text-sm text-slate-500">
-              <p className="flex-1">{historyToggleMessage}</p>
-              <button
-                type="button"
-                className="rounded-full border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
-                onClick={toggleHistoryCollapsed}
-                aria-expanded={!isHistoryCollapsed}
-              >
-                {isHistoryCollapsed ? "展开历史复盘" : "折叠历史复盘"}
-              </button>
-            </div>
-
-            <div className="flex-1 overflow-hidden rounded-2xl bg-[#f8fafc] p-4">
-              <div className="grid grid-cols-[120px_1fr_240px_1fr_90px] gap-4 rounded-xl border border-transparent bg-white px-4 py-2 text-sm font-semibold text-slate-500 shadow-sm">
-                <span>类别</span>
-                <span>今天发生的事</span>
-                <span>多提几个问题</span>
-                <span>解决问题</span>
-                <span className="text-right">操作</span>
-              </div>
-              <div className="mt-4 flex flex-col gap-4">
-                {!currentReview && (
-                  <p className="text-sm text-slate-500">当前没有可编辑的复盘，点击「新建」开始今天的表格。</p>
-                )}
-                {currentReview?.rows
-                  .sort((a, b) => a.order_index - b.order_index)
-                  .map((row) => (
-                    <div
-                      key={row.id}
-                      className="grid grid-cols-[120px_1fr_240px_1fr_90px] items-start gap-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm"
-                    >
-                      <label className="flex flex-col gap-1">
-                        <span className="text-xs font-medium text-slate-400">类别</span>
-                        <div className="relative">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setOpenCategoryRowId((prev) => (prev === row.id ? null : row.id))
-                            }
-                            className="flex w-full items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-2.5 py-2 text-left text-xs font-medium text-slate-700 transition hover:border-blue-300"
-                          >
-                            <span>#{normalizeCategory(row.category) || UNCATEGORIZED_LABEL}</span>
-                            <span className="text-slate-400">{openCategoryRowId === row.id ? "^" : "v"}</span>
-                          </button>
-                          {openCategoryRowId === row.id && (
-                            <div className="absolute z-20 mt-1 w-full rounded-lg border border-slate-200 bg-white p-2 shadow-lg">
-                              <button
-                                type="button"
-                                onClick={() => handleCreateCategory(row.id)}
-                                className="mb-2 w-full rounded-md border border-dashed border-slate-300 px-2 py-1.5 text-left text-xs font-medium text-slate-600 transition hover:border-blue-300 hover:text-blue-600"
-                              >
-                                + 新建标签
-                              </button>
-                              <div className="flex max-h-36 flex-col gap-1 overflow-auto">
-                                <button
-                                  type="button"
-                                  onClick={() => handleSelectCategory(row.id, "")}
-                                  className={`rounded-md px-2 py-1.5 text-left text-xs transition ${
-                                    !normalizeCategory(row.category)
-                                      ? "bg-blue-50 text-blue-700"
-                                      : "text-slate-600 hover:bg-slate-50"
-                                  }`}
-                                >
-                                  #{UNCATEGORIZED_LABEL}
-                                </button>
-                                {categoryOptions.map((category) => {
-                                  const selected = normalizeCategory(row.category) === category;
-                                  return (
-                                    <div key={category} className="flex items-center gap-1">
-                                      <button
-                                        type="button"
-                                        onClick={() => handleSelectCategory(row.id, category)}
-                                        className={`flex-1 rounded-md px-2 py-1.5 text-left text-xs transition ${
-                                          selected
-                                            ? "bg-blue-50 text-blue-700"
-                                            : "text-slate-600 hover:bg-slate-50"
-                                        }`}
-                                      >
-                                        #{category}
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => handleDeleteCategory(category)}
-                                        className="rounded-md px-2 py-1 text-xs text-rose-500 transition hover:bg-rose-50 hover:text-rose-600"
-                                        aria-label={`删除标签 #${category}`}
-                                      >
-                                        删除
-                                      </button>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </label>
-                      <label className="flex flex-col gap-1">
-                        <span className="text-xs font-medium text-slate-400">今天发生的事</span>
-                        <textarea
-                          className="min-h-[80px] rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm leading-relaxed focus:border-blue-400 focus:outline-none"
-                          value={row.context}
-                          onChange={(event) =>
-                            handleRowFieldChange(row.id, "context", event.target.value)
-                          }
-                        />
-                      </label>
-                      <div className="flex flex-col gap-2">
-                        <span className="text-xs font-medium text-slate-400">多提几个问题</span>
-                        <div className="flex flex-col gap-3">
-                          {[...row.qas]
-                            .sort((a, b) => a.order_index - b.order_index)
-                            .map((qa) => (
-                              <div
-                                key={qa.id}
-                                className="flex flex-col gap-2 rounded-xl border border-dashed border-slate-200 bg-slate-50 p-3"
-                              >
-                                <div className="flex items-start gap-2">
-                                  <span className="text-xs font-semibold text-red-600 mt-1">Q:</span>
-                                  <textarea
-                                    className="min-h-[52px] flex-1 border-0 bg-transparent p-0 text-sm leading-relaxed outline-none focus-visible:ring-0"
-                                    value={qa.question}
-                                    onChange={(event) =>
-                                      handleQaQuestionChange(row.id, qa.id, event.target.value)
-                                    }
-                                    onKeyDown={(event) => {
-                                      if (event.key === "Enter" && !event.shiftKey) {
-                                        event.preventDefault();
-                                        handleShowAnswer(row.id, qa.id);
-                                      }
-                                      if (event.key === "Escape") {
-                                        event.currentTarget.blur();
-                                      }
-                                    }}
-                                    placeholder=""
-                                  />
-                                </div>
-                                <div className="flex justify-end">
-                                  <button
-                                    type="button"
-                                    className="text-base font-medium text-rose-500 hover:text-rose-600"
-                                    onClick={() => handleRemoveQa(row.id, qa.id)}
-                                    aria-label="删除 Q/A"
-                                  >
-                                    🗑
-                                  </button>
-                                </div>
-                                {qa.showAnswer && (
-                                  <div className="flex flex-col gap-1 pt-1">
-                                    <div className="flex items-start gap-2">
-                                      <span className="text-xs font-semibold text-blue-600 mt-1">A:</span>
-                                      <textarea
-                                        className="min-h-[52px] flex-1 border-0 bg-transparent p-0 text-sm leading-relaxed outline-none focus-visible:ring-0"
-                                        value={qa.answer}
-                                        onChange={(event) =>
-                                          handleQaAnswerChange(row.id, qa.id, event.target.value)
-                                        }
-                                        onKeyDown={(event) => {
-                                          if (event.key === "Enter" && !event.shiftKey) {
-                                            event.preventDefault();
-                                            handleAddQa(row.id);
-                                          }
-                                          if (event.key === "Escape") {
-                                            event.currentTarget.blur();
-                                          }
-                                        }}
-                                        placeholder=""
-                                      />
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
-                            ))}
-                          <button
-                            type="button"
-                            className="text-left text-sm font-medium text-blue-600 hover:text-blue-500"
-                            onClick={() => handleAddQa(row.id)}
-                          >
-                            + 新增问题
-                          </button>
-                        </div>
-                      </div>
-                      <label className="flex flex-col gap-1">
-                        <span className="text-xs font-medium text-slate-400">解决问题</span>
-                        <textarea
-                          className="min-h-[80px] rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm leading-relaxed focus:border-blue-400 focus:outline-none"
-                          value={row.solutions}
-                          onChange={(event) =>
-                            handleRowFieldChange(row.id, "solutions", event.target.value)
-                          }
-                        />
-                      </label>
-                      <div className="flex flex-col items-center justify-between gap-2">
-                        <button
-                          type="button"
-                          className="h-9 w-9 rounded-xl border border-slate-200 bg-white text-xl font-semibold leading-none text-slate-600 transition hover:border-blue-300 hover:text-blue-600"
-                          title="在下方插入一行"
-                          onClick={() => handleAddRow(row.id)}
-                        >
-                          +
-                        </button>
-                        <button
-                          type="button"
-                          className="h-9 w-9 rounded-xl border border-slate-200 bg-white text-xl font-semibold leading-none text-slate-600 transition hover:border-rose-300 hover:text-rose-600"
-                          title="删除当前行"
-                          onClick={() => handleDeleteRow(row.id)}
-                        >
-                          🗑
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-              </div>
-            </div>
-            <p className="text-xs text-slate-500">
-              失焦或等待 1s 后自动保存；点击错误状态可重试。每次只写当天，刷新不会丢失。
-            </p>
+                <div className="grid gap-4 md:grid-cols-2">
+                  {renderLogColumn("red", t.redBoard, "text-red-600", "text-red-600")}
+                  {renderLogColumn("black", t.blackBoard, "text-slate-900", "text-slate-900")}
+                </div>
+              </section>
+            )}
           </section>
         </main>
       </div>

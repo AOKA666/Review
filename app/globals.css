@@ -3,7 +3,7 @@
 @tailwind utilities;
 
 :root {
-  font-family: "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
+  font-family: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Noto Sans SC", system-ui, sans-serif;
   color: #0f172a;
   background-color: #f5f5f7;
 }
