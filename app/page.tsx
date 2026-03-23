@@ -33,6 +33,7 @@ const i18n = {
     confirmDeleteDay: (date: string) => `确认删除 ${date} 的记录吗？`,
     itemPlaceholder: "输入一条记录，回车新增下一条",
     reflectDeeper: "reflect deeper",
+    deepDive: "深度挖掘",
     qaSummary: (count: number) => `已记录 ${count} 轮 QA，点击展开`,
     deleteQa: "删除 QA",
     qPlaceholder: "输入问题，回车进入回答",
@@ -61,6 +62,7 @@ const i18n = {
     confirmDeleteDay: (date: string) => `Delete record for ${date}?`,
     itemPlaceholder: "Type one item, press Enter to add the next",
     reflectDeeper: "reflect deeper",
+    deepDive: "Deep Dive",
     qaSummary: (count: number) => `${count} QA rounds recorded, click to expand`,
     deleteQa: "Delete QA",
     qPlaceholder: "Type your question, Enter to answer",
@@ -548,21 +550,23 @@ export default function HomePage() {
 
                 {reflectionVisible && (
                   <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                    <div className="mb-2 flex items-center justify-end gap-2">
+                    <div className="mb-3 flex items-center justify-between gap-3 border-b border-slate-200 pb-2">
+                      <h4 className="text-sm font-semibold text-slate-700">{t.deepDive}</h4>
                       <button
                         type="button"
-                        className="inline-flex h-10 w-10 items-center justify-center rounded-md text-rose-500 transition hover:bg-rose-50 hover:text-rose-600"
+                        className="inline-flex h-8 items-center justify-center gap-1 rounded-md border border-rose-100 px-2 text-xs font-medium text-rose-500 transition hover:bg-rose-50 hover:text-rose-600"
                         onClick={() => handleDeleteReflection(column, item.id)}
                         aria-label={t.deleteQa}
                         title={t.deleteQa}
                       >
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-6 w-6" aria-hidden="true">
+                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden="true">
                           <path strokeLinecap="round" strokeLinejoin="round" d="M4 7h16" />
                           <path strokeLinecap="round" strokeLinejoin="round" d="M10 11v6" />
                           <path strokeLinecap="round" strokeLinejoin="round" d="M14 11v6" />
                           <path strokeLinecap="round" strokeLinejoin="round" d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12" />
                           <path strokeLinecap="round" strokeLinejoin="round" d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
                         </svg>
+                        <span>{t.delete}</span>
                       </button>
                     </div>
 
