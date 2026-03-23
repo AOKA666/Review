@@ -187,7 +187,10 @@ export default function HomePage() {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestReviews = useRef<ReviewRecord[]>([]);
   const currentIdRef = useRef<string | null>(null);
-  const pendingFocusRef = useRef<{ column: LogColumn; itemId: string } | null>(null);
+  type PendingFocusTarget =
+    | { type: "item"; column: LogColumn; itemId: string }
+    | { type: "qa"; column: LogColumn; itemId: string; qaId: string; field: "question" | "answer" };
+  const pendingFocusRef = useRef<PendingFocusTarget | null>(null);
 
   const t = i18n[lang];
   const formatHeaderDate = (dateStr: string) => {
@@ -346,7 +349,11 @@ export default function HomePage() {
     updateCurrentReview((review) => {
       const list = [...review.today_log[column]];
       const index = list.findIndex((item) => item.id === afterItemId);
-      list.splice(index + 1, 0, buildLogItem(list.length));
+      if (index < 0) return review;
+
+      const nextItem = buildLogItem(list.length);
+      list.splice(index + 1, 0, nextItem);
+      pendingFocusRef.current = { type: "item", column, itemId: nextItem.id };
       return { ...review, today_log: { ...review.today_log, [column]: syncLogOrder(list) } };
     });
   };
@@ -360,7 +367,7 @@ export default function HomePage() {
       if (index < 0) return review;
 
       const fallback = list[index - 1] ?? list[index + 1] ?? null;
-      if (fallback) pendingFocusRef.current = { column, itemId: fallback.id };
+      if (fallback) pendingFocusRef.current = { type: "item", column, itemId: fallback.id };
 
       list.splice(index, 1);
       return { ...review, today_log: { ...review.today_log, [column]: syncLogOrder(list) } };
@@ -421,15 +428,18 @@ export default function HomePage() {
         reflection_qas: syncQaOrder(item.reflection_qas.map((qa) => (qa.id === qaId ? { ...qa, showAnswer: true } : qa)))
       }))
     );
+    pendingFocusRef.current = { type: "qa", column, itemId, qaId, field: "answer" };
   };
 
   const handleAddQa = (column: LogColumn, itemId: string) => {
+    const nextQa = buildQaPair();
     updateCurrentReview((review) =>
       upsertItem(review, column, itemId, (item) => ({
         ...item,
-        reflection_qas: syncQaOrder([...item.reflection_qas, buildQaPair(item.reflection_qas.length)])
+        reflection_qas: syncQaOrder([...item.reflection_qas, { ...nextQa, order_index: item.reflection_qas.length }])
       }))
     );
+    pendingFocusRef.current = { type: "qa", column, itemId, qaId: nextQa.id, field: "question" };
   };
 
   const handleDeleteReflection = (column: LogColumn, itemId: string) => {
@@ -488,7 +498,11 @@ export default function HomePage() {
   useEffect(() => {
     const pending = pendingFocusRef.current;
     if (!pending) return;
-    const target = document.querySelector(`[data-column="${pending.column}"][data-item-id="${pending.itemId}"]`) as HTMLTextAreaElement | null;
+    const selector =
+      pending.type === "item"
+        ? `[data-column="${pending.column}"][data-item-id="${pending.itemId}"][data-focus-kind="item"]`
+        : `[data-column="${pending.column}"][data-item-id="${pending.itemId}"][data-qa-id="${pending.qaId}"][data-qa-field="${pending.field}"]`;
+    const target = document.querySelector(selector) as HTMLTextAreaElement | null;
     if (target) {
       target.focus();
       target.setSelectionRange(target.value.length, target.value.length);
@@ -525,6 +539,7 @@ export default function HomePage() {
                     onKeyDown={(event) => handleItemKeyDown(event, column, item.id)}
                     data-column={column}
                     data-item-id={item.id}
+                    data-focus-kind="item"
                     className={`min-h-[28px] flex-1 resize-none overflow-hidden border-0 bg-transparent p-0 leading-7 outline-none focus:ring-0 ${textClass}`}
                     placeholder={t.itemPlaceholder}
                   />
@@ -581,6 +596,10 @@ export default function HomePage() {
                                 className="min-h-[52px] flex-1 rounded-md border border-slate-200 px-2 py-1 text-sm leading-relaxed outline-none focus:border-blue-400"
                                 value={qa.question}
                                 onChange={(event) => handleQaQuestionChange(column, item.id, qa.id, event.target.value)}
+                                data-column={column}
+                                data-item-id={item.id}
+                                data-qa-id={qa.id}
+                                data-qa-field="question"
                                 onKeyDown={(event) => {
                                   if (event.key === "Enter" && !event.shiftKey) {
                                     event.preventDefault();
@@ -605,6 +624,10 @@ export default function HomePage() {
                                   className="min-h-[52px] flex-1 rounded-md border border-slate-200 px-2 py-1 text-sm leading-relaxed outline-none focus:border-blue-400"
                                   value={qa.answer}
                                   onChange={(event) => handleQaAnswerChange(column, item.id, qa.id, event.target.value)}
+                                  data-column={column}
+                                  data-item-id={item.id}
+                                  data-qa-id={qa.id}
+                                  data-qa-field="answer"
                                   onKeyDown={(event) => {
                                     if (event.key === "Enter" && !event.shiftKey) {
                                       event.preventDefault();
