@@ -590,10 +590,22 @@ export default function HomePage() {
                         .sort((a, b) => a.order_index - b.order_index)
                         .map((qa) => (
                           <div key={qa.id} className="rounded-lg border border-dashed border-slate-200 bg-white p-2">
-                            <div className="flex items-start gap-2">
+                            <div className="mb-2 flex justify-end">
+                              <button
+                                type="button"
+                                className="inline-flex h-6 w-6 items-center justify-center rounded-md text-sm font-semibold leading-none text-rose-500 transition hover:bg-rose-50 hover:text-rose-600"
+                                onClick={() => handleRemoveQa(column, item.id, qa.id)}
+                                aria-label={t.delete}
+                                title={t.delete}
+                              >
+                                X
+                              </button>
+                            </div>
+
+                            <div className="grid grid-cols-[20px,1fr] items-start gap-2">
                               <span className="mt-1 text-xs font-semibold text-red-600">Q:</span>
                               <textarea
-                                className="min-h-[52px] flex-1 rounded-md border border-slate-200 px-2 py-1 text-sm leading-relaxed outline-none focus:border-blue-400"
+                                className="min-h-[52px] w-full rounded-md border border-slate-200 px-2 py-1 text-sm leading-relaxed outline-none focus:border-blue-400"
                                 value={qa.question}
                                 onChange={(event) => handleQaQuestionChange(column, item.id, qa.id, event.target.value)}
                                 data-column={column}
@@ -608,20 +620,13 @@ export default function HomePage() {
                                 }}
                                 placeholder={t.qPlaceholder}
                               />
-                              <button
-                                type="button"
-                                className="rounded-md px-2 py-1 text-xs text-rose-500 transition hover:bg-rose-50 hover:text-rose-600"
-                                onClick={() => handleRemoveQa(column, item.id, qa.id)}
-                              >
-                                {t.delete}
-                              </button>
                             </div>
 
                             {qa.showAnswer && (
-                              <div className="mt-2 flex items-start gap-2">
+                              <div className="mt-2 grid grid-cols-[20px,1fr] items-start gap-2">
                                 <span className="mt-1 text-xs font-semibold text-blue-600">A:</span>
                                 <textarea
-                                  className="min-h-[52px] flex-1 rounded-md border border-slate-200 px-2 py-1 text-sm leading-relaxed outline-none focus:border-blue-400"
+                                  className="min-h-[52px] w-full rounded-md border border-slate-200 px-2 py-1 text-sm leading-relaxed outline-none focus:border-blue-400"
                                   value={qa.answer}
                                   onChange={(event) => handleQaAnswerChange(column, item.id, qa.id, event.target.value)}
                                   data-column={column}
