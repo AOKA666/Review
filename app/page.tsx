@@ -1,6 +1,6 @@
 "use client";
 
-import { KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { LogItem, QaPair, ReviewRecord, TodayLog } from "../lib/review";
 
 type SaveStatus = "ready" | "saving" | "saved" | "error";
@@ -18,7 +18,7 @@ const i18n = {
     status: { ready: "就绪", saving: "保存中...", saved: "已保存", error: "保存失败（点击重试）" },
     langZh: "中文",
     langEn: "EN",
-    newToday: "新建今日记录",
+    newToday: "新建记录",
     collapse: "折叠",
     updatedAt: "更新于",
     emptyRecord: "暂无记录",
@@ -47,7 +47,7 @@ const i18n = {
     status: { ready: "Ready", saving: "Saving...", saved: "Saved", error: "Save failed (click to retry)" },
     langZh: "中文",
     langEn: "EN",
-    newToday: "New today entry",
+    newToday: "New entry",
     collapse: "Collapse",
     updatedAt: "Updated",
     emptyRecord: "No records yet",
@@ -183,6 +183,7 @@ export default function HomePage() {
   const [status, setStatus] = useState<SaveStatus>("ready");
   const [isHistoryCollapsed, setIsHistoryCollapsed] = useState(false);
   const [expandedItemIds, setExpandedItemIds] = useState<Record<string, boolean>>({});
+  const [collapsedMonths, setCollapsedMonths] = useState<Set<string>>(new Set());
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestReviews = useRef<ReviewRecord[]>([]);
@@ -191,6 +192,7 @@ export default function HomePage() {
     | { type: "item"; column: LogColumn; itemId: string }
     | { type: "qa"; column: LogColumn; itemId: string; qaId: string; field: "question" | "answer" };
   const pendingFocusRef = useRef<PendingFocusTarget | null>(null);
+  const dateInputRef = useRef<HTMLInputElement | null>(null);
 
   const t = i18n[lang];
   const formatHeaderDate = (dateStr: string) => {
@@ -213,6 +215,34 @@ export default function HomePage() {
   };
 
   const currentReview = useMemo(() => reviews.find((item) => item.id === currentId) ?? null, [reviews, currentId]);
+
+  const groupedReviews = useMemo(() => {
+    const map = new Map<string, ReviewRecord[]>();
+    for (const review of reviews) {
+      const monthKey = review.date.slice(0, 7);
+      const list = map.get(monthKey) ?? [];
+      list.push(review);
+      map.set(monthKey, list);
+    }
+    return Array.from(map.entries()).sort((a, b) => b[0].localeCompare(a[0]));
+  }, [reviews]);
+
+  const toggleMonth = (monthKey: string) => {
+    setCollapsedMonths((prev) => {
+      const next = new Set(prev);
+      if (next.has(monthKey)) next.delete(monthKey);
+      else next.add(monthKey);
+      return next;
+    });
+  };
+
+  const formatMonthLabel = (monthKey: string) => {
+    const date = new Date(`${monthKey}-01`);
+    if (lang === "zh") {
+      return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long" }).format(date);
+    }
+    return new Intl.DateTimeFormat("en-US", { year: "numeric", month: "long" }).format(date);
+  };
 
   const setReviewsDirect = (next: ReviewRecord[]) => {
     const sorted = sortAndLimit(next.map(normalizeReview));
@@ -298,16 +328,22 @@ export default function HomePage() {
     persistLocally(next);
   };
 
-  const handleNewReview = () => {
-    const today = todayKey();
-    const existed = reviews.find((item) => item.date === today);
+  const handleNewReview = (date: string) => {
+    const existed = reviews.find((item) => item.date === date);
     if (existed) { setCurrentId(existed.id); return; }
 
-    const next = [buildReview(today), ...reviews].slice(0, MAX_HISTORY);
+    const next = [buildReview(date), ...reviews].slice(0, MAX_HISTORY);
     setReviewsDirect(next);
     setCurrentId(next[0]?.id ?? null);
     setStatus("saved");
     void persistNow();
+  };
+
+  const handleDateSelect = (event: ChangeEvent<HTMLInputElement>) => {
+    const date = event.target.value;
+    if (!date) return;
+    handleNewReview(date);
+    event.target.value = "";
   };
 
   const handleDeleteCurrentReview = () => {
@@ -707,11 +743,25 @@ export default function HomePage() {
                 <button
                   type="button"
                   className="inline-flex items-center gap-1 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-500 px-3 py-1.5 text-sm font-semibold text-white shadow-lg shadow-blue-200 transition hover:from-blue-500 hover:to-indigo-400"
-                  onClick={handleNewReview}
+                  onClick={() => {
+                    const input = dateInputRef.current;
+                    if (!input) return;
+                    try {
+                      (input as HTMLInputElement & { showPicker(): void }).showPicker();
+                    } catch {
+                      input.click();
+                    }
+                  }}
                 >
                   <span className="text-base leading-none">+</span>
                   <span>{t.newToday}</span>
                 </button>
+                <input
+                  ref={dateInputRef}
+                  type="date"
+                  className="sr-only"
+                  onChange={handleDateSelect}
+                />
                 <button
                   type="button"
                   className="rounded-xl border border-slate-200 px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50"
@@ -721,21 +771,44 @@ export default function HomePage() {
                 </button>
               </div>
 
-              <div className="flex flex-col gap-2">
-                {reviews.map((review) => (
-                  <button
-                    key={review.id}
-                    type="button"
-                    onClick={() => setCurrentId(review.id)}
-                    className={`rounded-xl border p-3 text-left transition ${review.id === currentId ? "border-blue-400 bg-blue-50" : "border-slate-200 bg-slate-50 hover:border-slate-300"}`}
-                  >
-                    <div className="text-sm font-semibold">{review.date.replace(/-/g, ".")}</div>
-                    <div className="mt-1 text-xs text-slate-500">
-                      {t.updatedAt}{" "}
-                      {new Date(review.updated_at).toLocaleTimeString(lang === "zh" ? "zh-CN" : "en-US", { hour: "2-digit", minute: "2-digit" })}
+              <div className="flex flex-col gap-3">
+                {groupedReviews.map(([monthKey, monthReviews]) => {
+                  const isCollapsed = collapsedMonths.has(monthKey);
+                  return (
+                    <div key={monthKey} className="flex flex-col gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => toggleMonth(monthKey)}
+                        className="flex items-center justify-between rounded-xl border border-slate-200 bg-slate-100 px-3 py-2 text-left transition hover:border-slate-300 hover:bg-slate-200"
+                      >
+                        <span className="text-sm font-semibold text-slate-700">{formatMonthLabel(monthKey)}</span>
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-slate-500">{monthReviews.length}</span>
+                          <span className="text-xs text-slate-500">{isCollapsed ? "▶" : "▼"}</span>
+                        </div>
+                      </button>
+
+                      {!isCollapsed && (
+                        <div className="flex flex-col gap-1.5 pl-2">
+                          {monthReviews.map((review) => (
+                            <button
+                              key={review.id}
+                              type="button"
+                              onClick={() => setCurrentId(review.id)}
+                              className={`rounded-xl border p-2.5 text-left transition ${review.id === currentId ? "border-blue-400 bg-blue-50" : "border-slate-200 bg-slate-50 hover:border-slate-300"}`}
+                            >
+                              <div className="text-sm font-semibold">{review.date.replace(/-/g, ".")}</div>
+                              <div className="mt-0.5 text-xs text-slate-500">
+                                {t.updatedAt}{" "}
+                                {new Date(review.updated_at).toLocaleTimeString(lang === "zh" ? "zh-CN" : "en-US", { hour: "2-digit", minute: "2-digit" })}
+                              </div>
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     </div>
-                  </button>
-                ))}
+                  );
+                })}
               </div>
             </section>
           )}
