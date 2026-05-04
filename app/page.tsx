@@ -188,6 +188,7 @@ export default function HomePage() {
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestReviews = useRef<ReviewRecord[]>([]);
   const currentIdRef = useRef<string | null>(null);
+  const initialCollapseInitialized = useRef(false);
   type PendingFocusTarget =
     | { type: "item"; column: LogColumn; itemId: string }
     | { type: "qa"; column: LogColumn; itemId: string; qaId: string; field: "question" | "answer" };
@@ -242,6 +243,12 @@ export default function HomePage() {
       return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long" }).format(date);
     }
     return new Intl.DateTimeFormat("en-US", { year: "numeric", month: "long" }).format(date);
+  };
+
+  const getDefaultCollapsedMonths = (reviews: ReviewRecord[]) => {
+    const currentMonth = todayKey().slice(0, 7);
+    const monthKeys = Array.from(new Set(reviews.map((review) => review.date.slice(0, 7))));
+    return new Set(monthKeys.filter((monthKey) => monthKey !== currentMonth));
   };
 
   const setReviewsDirect = (next: ReviewRecord[]) => {
@@ -530,6 +537,13 @@ export default function HomePage() {
 
   useEffect(() => { currentIdRef.current = currentId; }, [currentId]);
   useEffect(() => { latestReviews.current = reviews; }, [reviews]);
+
+  useEffect(() => {
+    if (initialCollapseInitialized.current) return;
+    if (!reviews.length) return;
+    setCollapsedMonths(getDefaultCollapsedMonths(reviews));
+    initialCollapseInitialized.current = true;
+  }, [reviews]);
 
   useEffect(() => {
     const pending = pendingFocusRef.current;
