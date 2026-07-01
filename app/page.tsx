@@ -629,45 +629,39 @@ export default function HomePage() {
                 )}
 
                 {reflectionVisible && (
-                  <div className="mt-2 rounded-xl border border-slate-200 bg-slate-50 p-3">
-                    <div className="mb-3 flex items-center justify-between gap-3 border-b border-slate-200 pb-2">
-                      <h4 className="text-sm font-semibold text-slate-700">{t.deepDive}</h4>
-                      <button
-                        type="button"
-                        className="inline-flex h-8 items-center justify-center gap-1 rounded-md border border-rose-100 px-2 text-xs font-medium text-rose-500 transition hover:bg-rose-50 hover:text-rose-600"
-                        onClick={() => handleDeleteReflection(column, item.id)}
-                        aria-label={t.deleteQa}
-                        title={t.deleteQa}
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden="true">
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M4 7h16" />
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M10 11v6" />
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M14 11v6" />
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12" />
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
-                        </svg>
-                        <span>{t.delete}</span>
-                      </button>
-                    </div>
+                  <div className="group/reflection relative mt-2 rounded-lg border border-slate-100 bg-slate-50/60 p-2 transition hover:border-slate-200">
+                    <button
+                      type="button"
+                      className="absolute right-1.5 top-1.5 z-10 inline-flex h-7 w-7 items-center justify-center rounded-full text-rose-400 opacity-0 transition hover:bg-rose-50 hover:text-rose-600 group-hover/reflection:opacity-100 group-focus-within/reflection:opacity-100"
+                      onClick={() => handleDeleteReflection(column, item.id)}
+                      aria-label={t.deleteQa}
+                      title={t.deleteQa}
+                    >
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" className="h-4 w-4" aria-hidden="true">
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 7h16" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M10 11v6" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M14 11v6" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M6 7l1 12a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-12" />
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2" />
+                      </svg>
+                    </button>
 
-                    <div className="flex flex-col gap-2">
+                    <div className="flex flex-col gap-2 pr-6">
                       {[...item.reflection_qas]
                         .sort((a, b) => a.order_index - b.order_index)
                         .map((qa) => (
-                          <div key={qa.id} className="rounded-lg border border-dashed border-slate-200 bg-white p-2">
-                            <div className="mb-2 flex justify-end">
-                              <button
-                                type="button"
-                                className="inline-flex h-6 w-6 items-center justify-center rounded-md text-sm font-semibold leading-none text-rose-500 transition hover:bg-rose-50 hover:text-rose-600"
-                                onClick={() => handleRemoveQa(column, item.id, qa.id)}
-                                aria-label={t.delete}
-                                title={t.delete}
-                              >
-                                X
-                              </button>
-                            </div>
+                          <div key={qa.id} className="group/qa relative rounded-md border border-slate-100 bg-white p-2 pr-7">
+                            <button
+                              type="button"
+                              className="absolute right-1 top-1 inline-flex h-6 w-6 items-center justify-center rounded-full text-sm font-semibold leading-none text-rose-400 opacity-0 transition hover:bg-rose-50 hover:text-rose-600 group-hover/qa:opacity-100 group-focus-within/qa:opacity-100"
+                              onClick={() => handleRemoveQa(column, item.id, qa.id)}
+                              aria-label={t.delete}
+                              title={t.delete}
+                            >
+                              ×
+                            </button>
 
-                            <div className="grid grid-cols-[20px,1fr] items-start gap-2">
+                            <div className="grid grid-cols-[18px,1fr] items-start gap-1.5">
                               <span className="mt-1 text-xs font-semibold text-red-600">Q:</span>
                               <textarea
                                 className="min-h-[52px] w-full resize-none overflow-hidden rounded-md border border-slate-200 px-2 py-1 text-sm leading-relaxed outline-none focus:border-blue-400"
@@ -693,7 +687,7 @@ export default function HomePage() {
                             </div>
 
                             {qa.showAnswer && (
-                              <div className="mt-2 grid grid-cols-[20px,1fr] items-start gap-2">
+                              <div className="mt-2 grid grid-cols-[18px,1fr] items-start gap-1.5">
                                 <span className="mt-1 text-xs font-semibold text-blue-600">A:</span>
                                 <textarea
                                   className="min-h-[52px] w-full resize-none overflow-hidden rounded-md border border-slate-200 px-2 py-1 text-sm leading-relaxed outline-none focus:border-blue-400"
