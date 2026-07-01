@@ -195,6 +195,11 @@ export default function HomePage() {
   const pendingFocusRef = useRef<PendingFocusTarget | null>(null);
   const dateInputRef = useRef<HTMLInputElement | null>(null);
 
+  const adjustTextAreaHeight = (target: HTMLTextAreaElement) => {
+    target.style.height = "auto";
+    target.style.height = `${target.scrollHeight}px`;
+  };
+
   const t = i18n[lang];
   const formatHeaderDate = (dateStr: string) => {
     const date = new Date(dateStr);
@@ -546,6 +551,10 @@ export default function HomePage() {
   }, [reviews]);
 
   useEffect(() => {
+    document.querySelectorAll<HTMLTextAreaElement>("textarea[data-autoresize]").forEach(adjustTextAreaHeight);
+  }, [reviews, expandedItemIds, currentId]);
+
+  useEffect(() => {
     const pending = pendingFocusRef.current;
     if (!pending) return;
     const selector =
@@ -554,6 +563,7 @@ export default function HomePage() {
         : `[data-column="${pending.column}"][data-item-id="${pending.itemId}"][data-qa-id="${pending.qaId}"][data-qa-field="${pending.field}"]`;
     const target = document.querySelector(selector) as HTMLTextAreaElement | null;
     if (target) {
+      adjustTextAreaHeight(target);
       target.focus();
       target.setSelectionRange(target.value.length, target.value.length);
       pendingFocusRef.current = null;
@@ -585,8 +595,13 @@ export default function HomePage() {
                 <div className="flex items-start gap-2">
                   <textarea
                     value={item.text}
-                    onChange={(event) => handleItemTextChange(column, item.id, event.target.value)}
+                    onChange={(event) => {
+                      adjustTextAreaHeight(event.currentTarget);
+                      handleItemTextChange(column, item.id, event.target.value);
+                    }}
                     onKeyDown={(event) => handleItemKeyDown(event, column, item.id)}
+                    rows={1}
+                    data-autoresize
                     data-column={column}
                     data-item-id={item.id}
                     data-focus-kind="item"
@@ -655,9 +670,14 @@ export default function HomePage() {
                             <div className="grid grid-cols-[20px,1fr] items-start gap-2">
                               <span className="mt-1 text-xs font-semibold text-red-600">Q:</span>
                               <textarea
-                                className="min-h-[52px] w-full rounded-md border border-slate-200 px-2 py-1 text-sm leading-relaxed outline-none focus:border-blue-400"
+                                className="min-h-[52px] w-full resize-none overflow-hidden rounded-md border border-slate-200 px-2 py-1 text-sm leading-relaxed outline-none focus:border-blue-400"
                                 value={qa.question}
-                                onChange={(event) => handleQaQuestionChange(column, item.id, qa.id, event.target.value)}
+                                onChange={(event) => {
+                                  adjustTextAreaHeight(event.currentTarget);
+                                  handleQaQuestionChange(column, item.id, qa.id, event.target.value);
+                                }}
+                                rows={2}
+                                data-autoresize
                                 data-column={column}
                                 data-item-id={item.id}
                                 data-qa-id={qa.id}
@@ -676,9 +696,14 @@ export default function HomePage() {
                               <div className="mt-2 grid grid-cols-[20px,1fr] items-start gap-2">
                                 <span className="mt-1 text-xs font-semibold text-blue-600">A:</span>
                                 <textarea
-                                  className="min-h-[52px] w-full rounded-md border border-slate-200 px-2 py-1 text-sm leading-relaxed outline-none focus:border-blue-400"
+                                  className="min-h-[52px] w-full resize-none overflow-hidden rounded-md border border-slate-200 px-2 py-1 text-sm leading-relaxed outline-none focus:border-blue-400"
                                   value={qa.answer}
-                                  onChange={(event) => handleQaAnswerChange(column, item.id, qa.id, event.target.value)}
+                                  onChange={(event) => {
+                                    adjustTextAreaHeight(event.currentTarget);
+                                    handleQaAnswerChange(column, item.id, qa.id, event.target.value);
+                                  }}
+                                  rows={2}
+                                  data-autoresize
                                   data-column={column}
                                   data-item-id={item.id}
                                   data-qa-id={qa.id}
