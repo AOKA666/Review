@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { ChangeEvent, Fragment, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { LogItem, QaPair, ReviewRecord, TodayLog } from "../lib/review";
 
 type SaveStatus = "ready" | "saving" | "saved" | "error";
@@ -9,7 +9,7 @@ type Lang = "zh" | "en";
 
 const STORAGE_KEY = "repano_reviews";
 const LANG_KEY = "repano_lang";
-const MAX_HISTORY = 20;
+const WEEKLY_SUMMARY_KEY = "repano_weekly_summaries";
 
 const i18n = {
   zh: {
@@ -39,7 +39,14 @@ const i18n = {
     qPlaceholder: "输入问题，回车进入回答",
     aPlaceholder: "输入回答，回车新增下一轮",
     delete: "删除",
-    addFirstQa: "+ 新增第一轮 QA"
+    addFirstQa: "+ 新增第一轮 QA",
+    weeklyReview: "周复盘",
+    weeklyRange: (start: string, end: string) => `${start} 至 ${end}`,
+    weeklyLoading: "AI 正在总结本周的红榜和黑榜…",
+    weeklyEmpty: "这一周还没有可总结的红榜或黑榜记录。",
+    weeklyError: "周复盘生成失败",
+    retryWeekly: "重试",
+    regenerateWeekly: "重新生成"
   },
   en: {
     topTag: "Today Log",
@@ -68,7 +75,14 @@ const i18n = {
     qPlaceholder: "Type your question, Enter to answer",
     aPlaceholder: "Type your answer, Enter for next round",
     delete: "Delete",
-    addFirstQa: "+ Add first QA round"
+    addFirstQa: "+ Add first QA round",
+    weeklyReview: "Weekly Review",
+    weeklyRange: (start: string, end: string) => `${start} to ${end}`,
+    weeklyLoading: "AI is summarizing this week's red and black lists…",
+    weeklyEmpty: "There are no red or black list entries to summarize this week.",
+    weeklyError: "Could not generate the weekly review",
+    retryWeekly: "Retry",
+    regenerateWeekly: "Regenerate"
   }
 } as const;
 
@@ -173,13 +187,97 @@ const normalizeReview = (raw: unknown): ReviewRecord => {
   };
 };
 
-const sortAndLimit = (list: ReviewRecord[]) => [...list].sort((a, b) => b.date.localeCompare(a.date)).slice(0, MAX_HISTORY);
+const sortReviews = (list: ReviewRecord[]) => [...list].sort((a, b) => b.date.localeCompare(a.date));
 const hasItemReflectionContent = (item: LogItem) => item.reflection_qas.some((qa) => qa.question.trim() || qa.answer.trim());
+
+type WeeklySummaryState = {
+  status: "idle" | "loading" | "ready" | "error";
+  summary?: string;
+  fingerprint?: string;
+  error?: string;
+};
+
+type WeeklySummarySection = {
+  title: string;
+  items: Array<{ text: string; ordered: boolean }>;
+};
+
+const renderInlineMarkdown = (text: string) =>
+  text.split(/(\*\*[^*]+\*\*)/g).filter(Boolean).map((part, index) =>
+    part.startsWith("**") && part.endsWith("**")
+      ? <strong key={index} className="font-semibold text-slate-900">{part.slice(2, -2)}</strong>
+      : <span key={index}>{part}</span>
+  );
+
+const parseWeeklySummary = (summary: string): WeeklySummarySection[] => {
+  const sections: WeeklySummarySection[] = [];
+  let current: WeeklySummarySection | null = null;
+  const headingPattern = /(红榜|黑榜|关键规律|下周行动|red.list|black.list|key patterns|next.week actions)/i;
+
+  for (const rawLine of summary.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line) continue;
+
+    const cleaned = line
+      .replace(/^#{1,6}\s*/, "")
+      .replace(/^\*\*(.*?)\*\*:?$/, "$1")
+      .replace(/^[一二三四][、.]\s*/, "")
+      .trim();
+
+    // MiniMax may prepend a document title such as
+    // "# 周复盘 · 2026-07-06 ~ 2026-07-12". The page already has its own
+    // heading and date range, so this must not become a fifth content card.
+    if (/^(周复盘(?:总结)?|weekly review)(?:\s*[·~～—–\-:：].*)?$/i.test(cleaned)) {
+      continue;
+    }
+
+    if (headingPattern.test(cleaned) && !/^[-*•]|^\d+[.)、]/.test(line)) {
+      current = { title: cleaned.replace(/[：:]$/, ""), items: [] };
+      sections.push(current);
+      continue;
+    }
+
+    if (!current) {
+      current = { title: "周复盘总结", items: [] };
+      sections.push(current);
+    }
+
+    const ordered = /^\d+[.)、]\s*/.test(line);
+    const text = line.replace(/^[-*•]\s*/, "").replace(/^\d+[.)、]\s*/, "").trim();
+    if (text) current.items.push({ text, ordered });
+  }
+
+  return sections;
+};
+
+const weeklySectionTheme = (title: string) => {
+  if (/红榜|red.list/i.test(title)) return { icon: "✓", card: "border-rose-200 bg-rose-50/70", iconClass: "bg-rose-100 text-rose-700", titleClass: "text-rose-800" };
+  if (/黑榜|black.list/i.test(title)) return { icon: "!", card: "border-slate-300 bg-slate-50", iconClass: "bg-slate-200 text-slate-700", titleClass: "text-slate-800" };
+  if (/规律|patterns/i.test(title)) return { icon: "◆", card: "border-amber-200 bg-amber-50/70", iconClass: "bg-amber-100 text-amber-700", titleClass: "text-amber-800" };
+  if (/行动|actions/i.test(title)) return { icon: "→", card: "border-emerald-200 bg-emerald-50/70", iconClass: "bg-emerald-100 text-emerald-700", titleClass: "text-emerald-800" };
+  return { icon: "•", card: "border-violet-200 bg-violet-50/70", iconClass: "bg-violet-100 text-violet-700", titleClass: "text-violet-800" };
+};
+
+const parseDateKey = (date: string) => new Date(`${date}T00:00:00`);
+const dateKey = (date: Date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
+const weekStartKey = (sunday: string) => {
+  const start = parseDateKey(sunday);
+  start.setDate(start.getDate() - 6);
+  return dateKey(start);
+};
+const isSunday = (date: string) => parseDateKey(date).getDay() === 0;
 
 export default function HomePage() {
   const [lang, setLang] = useState<Lang>("zh");
   const [reviews, setReviews] = useState<ReviewRecord[]>([]);
   const [currentId, setCurrentId] = useState<string | null>(null);
+  const [currentWeeklyEnd, setCurrentWeeklyEnd] = useState<string | null>(null);
+  const [weeklySummaries, setWeeklySummaries] = useState<Record<string, WeeklySummaryState>>({});
   const [status, setStatus] = useState<SaveStatus>("ready");
   const [isHistoryCollapsed, setIsHistoryCollapsed] = useState(false);
   const [expandedItemIds, setExpandedItemIds] = useState<Record<string, boolean>>({});
@@ -202,7 +300,7 @@ export default function HomePage() {
 
   const t = i18n[lang];
   const formatHeaderDate = (dateStr: string) => {
-    const date = new Date(dateStr);
+    const date = parseDateKey(dateStr);
     if (lang === "zh") {
       const d = new Intl.DateTimeFormat("zh-CN", {
         year: "numeric",
@@ -233,6 +331,77 @@ export default function HomePage() {
     return Array.from(map.entries()).sort((a, b) => b[0].localeCompare(a[0]));
   }, [reviews]);
 
+  const getWeekReviews = (weekEnd: string) => {
+    const start = weekStartKey(weekEnd);
+    return reviews
+      .filter((review) => review.date >= start && review.date <= weekEnd)
+      .sort((a, b) => a.date.localeCompare(b.date));
+  };
+
+  const formatHistoryDate = (dateStr: string) => {
+    const weekday = new Intl.DateTimeFormat(lang === "zh" ? "zh-CN" : "en-US", { weekday: "short" })
+      .format(parseDateKey(dateStr));
+    return `${dateStr.replace(/-/g, ".")} ${weekday}`;
+  };
+
+  const generateWeeklyReview = async (weekEnd: string, force = false) => {
+    const weekReviews = getWeekReviews(weekEnd);
+    const records = weekReviews.map((review) => ({
+      date: review.date,
+      red: review.today_log.red.map((item) => item.text.trim()).filter(Boolean),
+      black: review.today_log.black.map((item) => item.text.trim()).filter(Boolean)
+    }));
+    const fingerprint = JSON.stringify({ language: lang, records });
+    const cached = weeklySummaries[weekEnd];
+
+    if (!force && cached?.status === "ready" && cached.fingerprint === fingerprint) return;
+
+    if (!records.some((record) => record.red.length || record.black.length)) {
+      setWeeklySummaries((prev) => ({ ...prev, [weekEnd]: { status: "ready", fingerprint } }));
+      return;
+    }
+
+    setWeeklySummaries((prev) => ({ ...prev, [weekEnd]: { status: "loading", fingerprint } }));
+    try {
+      const response = await fetch("/api/weekly-summary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          weekStart: weekStartKey(weekEnd),
+          weekEnd,
+          language: lang,
+          records
+        })
+      });
+      const data = (await response.json()) as { summary?: string; error?: string };
+      if (!response.ok || !data.summary) throw new Error(data.error || "AI summary failed");
+      setWeeklySummaries((prev) => ({
+        ...prev,
+        [weekEnd]: { status: "ready", summary: data.summary, fingerprint }
+      }));
+    } catch (error) {
+      setWeeklySummaries((prev) => ({
+        ...prev,
+        [weekEnd]: {
+          status: "error",
+          fingerprint,
+          error: error instanceof Error ? error.message : "AI summary failed"
+        }
+      }));
+    }
+  };
+
+  const selectWeeklyReview = (weekEnd: string) => {
+    setCurrentId(null);
+    setCurrentWeeklyEnd(weekEnd);
+    void generateWeeklyReview(weekEnd);
+  };
+
+  const selectDailyReview = (id: string) => {
+    setCurrentWeeklyEnd(null);
+    setCurrentId(id);
+  };
+
   const toggleMonth = (monthKey: string) => {
     setCollapsedMonths((prev) => {
       const next = new Set(prev);
@@ -243,7 +412,7 @@ export default function HomePage() {
   };
 
   const formatMonthLabel = (monthKey: string) => {
-    const date = new Date(`${monthKey}-01`);
+    const date = parseDateKey(`${monthKey}-01`);
     if (lang === "zh") {
       return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long" }).format(date);
     }
@@ -257,7 +426,7 @@ export default function HomePage() {
   };
 
   const setReviewsDirect = (next: ReviewRecord[]) => {
-    const sorted = sortAndLimit(next.map(normalizeReview));
+    const sorted = sortReviews(next.map(normalizeReview));
     latestReviews.current = sorted;
     setReviews(sorted);
   };
@@ -265,7 +434,7 @@ export default function HomePage() {
   const updateReviews = (updater: (prev: ReviewRecord[]) => ReviewRecord[]) => {
     setReviews((prev) => {
       const updated = updater(prev);
-      const sorted = sortAndLimit(updated.map(normalizeReview));
+      const sorted = sortReviews(updated.map(normalizeReview));
       latestReviews.current = sorted;
       return sorted;
     });
@@ -273,7 +442,7 @@ export default function HomePage() {
 
   const persistLocally = (list: ReviewRecord[]) => {
     if (typeof window === "undefined") return;
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(sortAndLimit(list))); }
+    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(sortReviews(list))); }
     catch (error) { console.error("Local save failed", error); setStatus("error"); }
   };
 
@@ -294,7 +463,7 @@ export default function HomePage() {
     const updated = latestReviews.current.map((review) =>
       review.id === currentIdRef.current ? { ...review, updated_at: now } : review
     );
-    const payload = sortAndLimit(updated);
+    const payload = sortReviews(updated);
 
     setReviewsDirect(payload);
     persistLocally(payload);
@@ -323,30 +492,33 @@ export default function HomePage() {
   };
 
   const hydrateReviewList = (source: ReviewRecord[]) => {
-    const normalized = sortAndLimit(source.map(normalizeReview));
+    const normalized = sortReviews(source.map(normalizeReview));
     const today = todayKey();
     const todayReview = normalized.find((item) => item.date === today);
 
     if (todayReview) {
       setReviewsDirect(normalized);
       setCurrentId(todayReview.id);
+      setCurrentWeeklyEnd(null);
       persistLocally(normalized);
       return;
     }
 
-    const next = [buildReview(today), ...normalized].slice(0, MAX_HISTORY);
+    const next = sortReviews([buildReview(today), ...normalized]);
     setReviewsDirect(next);
     setCurrentId(next[0]?.id ?? null);
+    setCurrentWeeklyEnd(null);
     persistLocally(next);
   };
 
   const handleNewReview = (date: string) => {
     const existed = reviews.find((item) => item.date === date);
-    if (existed) { setCurrentId(existed.id); return; }
+    if (existed) { selectDailyReview(existed.id); return; }
 
-    const next = [buildReview(date), ...reviews].slice(0, MAX_HISTORY);
+    const next = sortReviews([buildReview(date), ...reviews]);
     setReviewsDirect(next);
     setCurrentId(next[0]?.id ?? null);
+    setCurrentWeeklyEnd(null);
     setStatus("saved");
     void persistNow();
   };
@@ -373,7 +545,7 @@ export default function HomePage() {
 
     setStatus("saving");
     void (async () => {
-      try { await saveToSupabase(sortAndLimit(nextList)); setStatus("saved"); }
+      try { await saveToSupabase(sortReviews(nextList)); setStatus("saved"); }
       catch (error) { console.error("Supabase delete sync failed", error); setStatus("error"); }
     })();
   };
@@ -505,12 +677,26 @@ export default function HomePage() {
     if (typeof window === "undefined") return;
     const raw = window.localStorage.getItem(LANG_KEY);
     if (raw === "zh" || raw === "en") setLang(raw);
+
+    const weeklyRaw = window.localStorage.getItem(WEEKLY_SUMMARY_KEY);
+    if (weeklyRaw) {
+      try { setWeeklySummaries(JSON.parse(weeklyRaw) as Record<string, WeeklySummaryState>); }
+      catch (error) { console.error("Weekly summary cache read failed", error); }
+    }
   }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem(LANG_KEY, lang);
   }, [lang]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const cache = Object.fromEntries(
+      Object.entries(weeklySummaries).filter(([, value]) => value.status === "ready")
+    );
+    window.localStorage.setItem(WEEKLY_SUMMARY_KEY, JSON.stringify(cache));
+  }, [weeklySummaries]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -824,18 +1010,29 @@ export default function HomePage() {
                       {!isCollapsed && (
                         <div className="flex flex-col gap-1.5 pl-2">
                           {monthReviews.map((review) => (
+                            <Fragment key={review.id}>
+                            {isSunday(review.date) && (
+                              <button
+                                type="button"
+                                onClick={() => selectWeeklyReview(review.date)}
+                                className={`ml-3 rounded-xl border p-2.5 text-left transition ${currentWeeklyEnd === review.date ? "border-violet-400 bg-violet-50" : "border-violet-200 bg-violet-50/50 hover:border-violet-300 hover:bg-violet-50"}`}
+                              >
+                                <div className="text-sm font-semibold text-violet-700">✨ {t.weeklyReview}</div>
+                                <div className="mt-0.5 text-xs text-slate-500">{t.weeklyRange(weekStartKey(review.date), review.date)}</div>
+                              </button>
+                            )}
                             <button
-                              key={review.id}
                               type="button"
-                              onClick={() => setCurrentId(review.id)}
+                              onClick={() => selectDailyReview(review.id)}
                               className={`rounded-xl border p-2.5 text-left transition ${review.id === currentId ? "border-blue-400 bg-blue-50" : "border-slate-200 bg-slate-50 hover:border-slate-300"}`}
                             >
-                              <div className="text-sm font-semibold">{review.date.replace(/-/g, ".")}</div>
+                              <div className="text-sm font-semibold">{formatHistoryDate(review.date)}</div>
                               <div className="mt-0.5 text-xs text-slate-500">
                                 {t.updatedAt}{" "}
                                 {new Date(review.updated_at).toLocaleTimeString(lang === "zh" ? "zh-CN" : "en-US", { hour: "2-digit", minute: "2-digit" })}
                               </div>
                             </button>
+                            </Fragment>
                           ))}
                         </div>
                       )}
@@ -849,8 +1046,14 @@ export default function HomePage() {
           <section className="flex min-h-[560px] flex-col gap-4 rounded-2xl bg-white p-6 shadow-lg shadow-slate-200">
             <div className="flex items-center justify-between gap-3">
               <div>
-                <p className="text-lg font-semibold">{currentReview ? formatHeaderDate(currentReview.date) : t.emptyRecord}</p>
-                <p className="text-sm text-slate-500">{t.autosaveHint}</p>
+                <p className="text-lg font-semibold">
+                  {currentWeeklyEnd
+                    ? `${t.weeklyReview} · ${t.weeklyRange(weekStartKey(currentWeeklyEnd), currentWeeklyEnd)}`
+                    : currentReview
+                    ? formatHeaderDate(currentReview.date)
+                    : t.emptyRecord}
+                </p>
+                <p className="text-sm text-slate-500">{currentWeeklyEnd ? "AI Summary" : t.autosaveHint}</p>
               </div>
               <div className="flex items-center gap-2">
                 {currentReview && (
@@ -872,7 +1075,81 @@ export default function HomePage() {
               </div>
             </div>
 
-            {!currentReview && <p className="text-sm text-slate-500">{t.emptyTip}</p>}
+            {!currentReview && !currentWeeklyEnd && <p className="text-sm text-slate-500">{t.emptyTip}</p>}
+
+            {currentWeeklyEnd && (() => {
+              const weekly = weeklySummaries[currentWeeklyEnd] ?? { status: "idle" as const };
+              return (
+                <section className="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-50 to-white p-6">
+                  <div className="mb-4 flex items-center justify-between gap-3">
+                    <h2 className="text-xl font-semibold text-violet-800">{t.weeklyReview}</h2>
+                    {weekly.status === "ready" && weekly.summary && (
+                      <button
+                        type="button"
+                        className="rounded-full border border-violet-200 bg-white px-3 py-1 text-xs font-medium text-violet-700 transition hover:bg-violet-50"
+                        onClick={() => void generateWeeklyReview(currentWeeklyEnd, true)}
+                      >
+                        {t.regenerateWeekly}
+                      </button>
+                    )}
+                  </div>
+                  {weekly.status === "loading" && <p className="animate-pulse text-sm text-violet-700">{t.weeklyLoading}</p>}
+                  {weekly.status === "ready" && weekly.summary && (
+                    <div className="grid gap-4 lg:grid-cols-2">
+                      {parseWeeklySummary(weekly.summary).map((section, sectionIndex) => {
+                        const theme = weeklySectionTheme(section.title);
+                        return (
+                          <article key={`${section.title}-${sectionIndex}`} className={`rounded-2xl border p-5 shadow-sm ${theme.card}`}>
+                            <div className="mb-4 flex items-center gap-3">
+                              <span className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-sm font-bold ${theme.iconClass}`}>
+                                {theme.icon}
+                              </span>
+                              <h3 className={`text-base font-bold tracking-tight ${theme.titleClass}`}>{section.title}</h3>
+                            </div>
+                            {section.items.length ? (
+                              <div className="space-y-3">
+                                {section.items.map((item, itemIndex) => (
+                                  <div key={itemIndex} className="flex items-start gap-3 rounded-xl bg-white/80 px-3.5 py-3 text-[15px] leading-6 text-slate-700 shadow-sm ring-1 ring-black/[0.04]">
+                                    <span className={`mt-0.5 inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full px-1 text-[11px] font-bold ${theme.iconClass}`}>
+                                      {item.ordered ? itemIndex + 1 : "•"}
+                                    </span>
+                                    <p>{renderInlineMarkdown(item.text)}</p>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-sm text-slate-500">—</p>
+                            )}
+                          </article>
+                        );
+                      })}
+                    </div>
+                  )}
+                  {weekly.status === "ready" && !weekly.summary && <p className="text-sm text-slate-500">{t.weeklyEmpty}</p>}
+                  {weekly.status === "error" && (
+                    <div className="flex flex-wrap items-center gap-3 text-sm text-rose-600">
+                      <span>{t.weeklyError}: {weekly.error}</span>
+                      <button
+                        type="button"
+                        className="rounded-full border border-rose-200 bg-white px-3 py-1 text-xs font-medium transition hover:bg-rose-50"
+                        onClick={() => void generateWeeklyReview(currentWeeklyEnd, true)}
+                      >
+                        {t.retryWeekly}
+                      </button>
+                    </div>
+                  )}
+                  {weekly.status === "idle" && (
+                    <button
+                      type="button"
+                      className="rounded-full bg-violet-600 px-4 py-2 text-sm font-semibold text-white hover:bg-violet-500"
+                      onClick={() => void generateWeeklyReview(currentWeeklyEnd)}
+                    >
+                      {t.weeklyReview}
+                    </button>
+                  )}
+                </section>
+              );
+            })()}
 
             {currentReview && (
               <section className="rounded-2xl border border-slate-200 bg-slate-50/70 p-5">
