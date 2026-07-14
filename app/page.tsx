@@ -2,6 +2,7 @@
 
 import { ChangeEvent, Fragment, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { LogItem, QaPair, ReviewRecord, TodayLog } from "../lib/review";
+import { parseWeeklySummary } from "../lib/weekly-summary";
 
 type SaveStatus = "ready" | "saving" | "saved" | "error";
 type LogColumn = "red" | "black";
@@ -197,58 +198,12 @@ type WeeklySummaryState = {
   error?: string;
 };
 
-type WeeklySummarySection = {
-  title: string;
-  items: Array<{ text: string; ordered: boolean }>;
-};
-
 const renderInlineMarkdown = (text: string) =>
   text.split(/(\*\*[^*]+\*\*)/g).filter(Boolean).map((part, index) =>
     part.startsWith("**") && part.endsWith("**")
       ? <strong key={index} className="font-semibold text-slate-900">{part.slice(2, -2)}</strong>
       : <span key={index}>{part}</span>
   );
-
-const parseWeeklySummary = (summary: string): WeeklySummarySection[] => {
-  const sections: WeeklySummarySection[] = [];
-  let current: WeeklySummarySection | null = null;
-  const headingPattern = /(红榜|黑榜|关键规律|下周行动|red.list|black.list|key patterns|next.week actions)/i;
-
-  for (const rawLine of summary.split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (!line) continue;
-
-    const cleaned = line
-      .replace(/^#{1,6}\s*/, "")
-      .replace(/^\*\*(.*?)\*\*:?$/, "$1")
-      .replace(/^[一二三四][、.]\s*/, "")
-      .trim();
-
-    // MiniMax may prepend a document title such as
-    // "# 周复盘 · 2026-07-06 ~ 2026-07-12". The page already has its own
-    // heading and date range, so this must not become a fifth content card.
-    if (/^(周复盘(?:总结)?|weekly review)(?:\s*[·~～—–\-:：].*)?$/i.test(cleaned)) {
-      continue;
-    }
-
-    if (headingPattern.test(cleaned) && !/^[-*•]|^\d+[.)、]/.test(line)) {
-      current = { title: cleaned.replace(/[：:]$/, ""), items: [] };
-      sections.push(current);
-      continue;
-    }
-
-    if (!current) {
-      current = { title: "周复盘总结", items: [] };
-      sections.push(current);
-    }
-
-    const ordered = /^\d+[.)、]\s*/.test(line);
-    const text = line.replace(/^[-*•]\s*/, "").replace(/^\d+[.)、]\s*/, "").trim();
-    if (text) current.items.push({ text, ordered });
-  }
-
-  return sections;
-};
 
 const weeklySectionTheme = (title: string) => {
   if (/红榜|red.list/i.test(title)) return { icon: "✓", card: "border-rose-200 bg-rose-50/70", iconClass: "bg-rose-100 text-rose-700", titleClass: "text-rose-800" };
