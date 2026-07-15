@@ -1,4 +1,8 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { NextResponse } from "next/server";
+import { getSupabaseAdmin } from "../../../lib/supabase";
+
+const OWNER_KEY = "weekly_summaries";
 
 type WeeklyRecord = {
   date: string;
@@ -11,17 +15,40 @@ type WeeklySummaryRequest = {
   weekEnd: string;
   language: "zh" | "en";
   records: WeeklyRecord[];
+  force?: boolean;
 };
 
+type StoredWeeklySummary = {
+  weekStart: string;
+  weekEnd: string;
+  language: "zh" | "en";
+  summary: string;
+  fingerprint?: string;
+  updatedAt: string;
+};
+
+type WeeklySummaryStore = Record<string, StoredWeeklySummary>;
+
 type MiniMaxChatResult = {
-  choices?: Array<{
-    message?: { content?: string };
-  }>;
+  choices?: Array<{ message?: { content?: string } }>;
   error?: { message?: string };
   base_resp?: { status_msg?: string };
 };
 
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const summaryKey = (weekEnd: string, language: "zh" | "en") => `${weekEnd}:${language}`;
+
+const readSummaryStore = async (supabase: SupabaseClient): Promise<WeeklySummaryStore> => {
+  const { data, error } = await supabase
+    .from("repano_reviews")
+    .select("payload")
+    .eq("owner", OWNER_KEY)
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data?.payload || typeof data.payload !== "object" || Array.isArray(data.payload)) return {};
+  return data.payload as WeeklySummaryStore;
+};
 
 const extractOutputText = (result: MiniMaxChatResult) => {
   const content = result.choices?.[0]?.message?.content;
@@ -36,6 +63,7 @@ const isValidPayload = (payload: unknown): payload is WeeklySummaryRequest => {
   if (!value.weekEnd || !DATE_KEY_PATTERN.test(value.weekEnd)) return false;
   if (value.language !== "zh" && value.language !== "en") return false;
   if (!Array.isArray(value.records) || value.records.length > 7) return false;
+  if (value.force !== undefined && typeof value.force !== "boolean") return false;
 
   return value.records.every(
     (record) =>
@@ -48,15 +76,17 @@ const isValidPayload = (payload: unknown): payload is WeeklySummaryRequest => {
   );
 };
 
-export async function POST(request: Request) {
-  const apiKey = process.env.MINIMAX_API_KEY;
-  if (!apiKey) {
-    return NextResponse.json(
-      { error: "服务端未配置 MINIMAX_API_KEY" },
-      { status: 503 }
-    );
+export async function GET() {
+  try {
+    const store = await readSummaryStore(getSupabaseAdmin());
+    return NextResponse.json({ summaries: Object.values(store) });
+  } catch (error) {
+    console.error("Supabase weekly summaries read failed", error);
+    return NextResponse.json({ summaries: [] }, { status: 500 });
   }
+}
 
+export async function POST(request: Request) {
   let payload: unknown;
   try {
     payload = await request.json();
@@ -66,6 +96,27 @@ export async function POST(request: Request) {
 
   if (!isValidPayload(payload)) {
     return NextResponse.json({ error: "周复盘数据格式不正确" }, { status: 400 });
+  }
+
+  let supabase: SupabaseClient;
+  let savedStore: WeeklySummaryStore;
+  try {
+    supabase = getSupabaseAdmin();
+    savedStore = await readSummaryStore(supabase);
+  } catch (error) {
+    console.error("Supabase weekly summary lookup failed", error);
+    return NextResponse.json({ error: "周复盘存储读取失败" }, { status: 500 });
+  }
+
+  const key = summaryKey(payload.weekEnd, payload.language);
+  const saved = savedStore[key];
+  if (!payload.force && saved?.summary) {
+    return NextResponse.json({ summary: saved.summary, fingerprint: saved.fingerprint, saved: true });
+  }
+
+  const apiKey = process.env.MINIMAX_API_KEY;
+  if (!apiKey) {
+    return NextResponse.json({ error: "服务端未配置 MINIMAX_API_KEY" }, { status: 503 });
   }
 
   const trimmedRecords = payload.records.map((record) => ({
@@ -82,10 +133,7 @@ export async function POST(request: Request) {
 
   const response = await fetch(`${baseUrl}/chat/completions`, {
     method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json"
-    },
+    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
       model: process.env.MINIMAX_MODEL || "MiniMax-M3",
       messages: [
@@ -116,5 +164,31 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "AI 没有返回可用的总结" }, { status: 502 });
   }
 
-  return NextResponse.json({ summary });
+  const fingerprint = JSON.stringify({ language: payload.language, records: trimmedRecords });
+  const persistedSummary: StoredWeeklySummary = {
+    weekStart: payload.weekStart,
+    weekEnd: payload.weekEnd,
+    language: payload.language,
+    summary,
+    fingerprint,
+    updatedAt: new Date().toISOString()
+  };
+
+  try {
+    const latestStore = await readSummaryStore(supabase);
+    const { error } = await supabase.from("repano_reviews").upsert(
+      {
+        owner: OWNER_KEY,
+        payload: { ...latestStore, [key]: persistedSummary },
+        updated_at: persistedSummary.updatedAt
+      },
+      { onConflict: "owner" }
+    );
+    if (error) throw error;
+  } catch (error) {
+    console.error("Supabase weekly summary save failed", error);
+    return NextResponse.json({ error: "周复盘已生成，但保存失败，请重试" }, { status: 500 });
+  }
+
+  return NextResponse.json({ summary, fingerprint, saved: true });
 }

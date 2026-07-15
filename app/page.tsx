@@ -1,8 +1,14 @@
 "use client";
 
 import { ChangeEvent, Fragment, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { reconcileMonthCollapseState } from "../lib/history-months";
 import { LogItem, QaPair, ReviewRecord, TodayLog } from "../lib/review";
 import { parseWeeklySummary } from "../lib/weekly-summary";
+import {
+  shouldGenerateWeeklySummary,
+  WeeklySummaryState,
+  weeklySummaryKey
+} from "../lib/weekly-summary-cache";
 
 type SaveStatus = "ready" | "saving" | "saved" | "error";
 type LogColumn = "red" | "black";
@@ -191,13 +197,6 @@ const normalizeReview = (raw: unknown): ReviewRecord => {
 const sortReviews = (list: ReviewRecord[]) => [...list].sort((a, b) => b.date.localeCompare(a.date));
 const hasItemReflectionContent = (item: LogItem) => item.reflection_qas.some((qa) => qa.question.trim() || qa.answer.trim());
 
-type WeeklySummaryState = {
-  status: "idle" | "loading" | "ready" | "error";
-  summary?: string;
-  fingerprint?: string;
-  error?: string;
-};
-
 const renderInlineMarkdown = (text: string) =>
   text.split(/(\*\*[^*]+\*\*)/g).filter(Boolean).map((part, index) =>
     part.startsWith("**") && part.endsWith("**")
@@ -236,12 +235,15 @@ export default function HomePage() {
   const [status, setStatus] = useState<SaveStatus>("ready");
   const [isHistoryCollapsed, setIsHistoryCollapsed] = useState(false);
   const [expandedItemIds, setExpandedItemIds] = useState<Record<string, boolean>>({});
-  const [collapsedMonths, setCollapsedMonths] = useState<Set<string>>(new Set());
+  const [monthCollapseState, setMonthCollapseState] = useState(() => ({
+    collapsedMonths: new Set<string>(),
+    knownMonths: new Set<string>()
+  }));
+  const collapsedMonths = monthCollapseState.collapsedMonths;
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestReviews = useRef<ReviewRecord[]>([]);
   const currentIdRef = useRef<string | null>(null);
-  const initialCollapseInitialized = useRef(false);
   type PendingFocusTarget =
     | { type: "item"; column: LogColumn; itemId: string }
     | { type: "qa"; column: LogColumn; itemId: string; qaId: string; field: "question" | "answer" };
@@ -306,17 +308,18 @@ export default function HomePage() {
       red: review.today_log.red.map((item) => item.text.trim()).filter(Boolean),
       black: review.today_log.black.map((item) => item.text.trim()).filter(Boolean)
     }));
+    const cacheKey = weeklySummaryKey(weekEnd, lang);
     const fingerprint = JSON.stringify({ language: lang, records });
-    const cached = weeklySummaries[weekEnd];
+    const cached = weeklySummaries[cacheKey];
 
-    if (!force && cached?.status === "ready" && cached.fingerprint === fingerprint) return;
+    if (!shouldGenerateWeeklySummary(cached, force)) return;
 
     if (!records.some((record) => record.red.length || record.black.length)) {
-      setWeeklySummaries((prev) => ({ ...prev, [weekEnd]: { status: "ready", fingerprint } }));
+      setWeeklySummaries((prev) => ({ ...prev, [cacheKey]: { status: "ready", fingerprint } }));
       return;
     }
 
-    setWeeklySummaries((prev) => ({ ...prev, [weekEnd]: { status: "loading", fingerprint } }));
+    setWeeklySummaries((prev) => ({ ...prev, [cacheKey]: { status: "loading", fingerprint } }));
     try {
       const response = await fetch("/api/weekly-summary", {
         method: "POST",
@@ -325,19 +328,20 @@ export default function HomePage() {
           weekStart: weekStartKey(weekEnd),
           weekEnd,
           language: lang,
-          records
+          records,
+          force
         })
       });
-      const data = (await response.json()) as { summary?: string; error?: string };
+      const data = (await response.json()) as { summary?: string; fingerprint?: string; error?: string };
       if (!response.ok || !data.summary) throw new Error(data.error || "AI summary failed");
       setWeeklySummaries((prev) => ({
         ...prev,
-        [weekEnd]: { status: "ready", summary: data.summary, fingerprint }
+        [cacheKey]: { status: "ready", summary: data.summary, fingerprint: data.fingerprint ?? fingerprint }
       }));
     } catch (error) {
       setWeeklySummaries((prev) => ({
         ...prev,
-        [weekEnd]: {
+        [cacheKey]: {
           status: "error",
           fingerprint,
           error: error instanceof Error ? error.message : "AI summary failed"
@@ -349,7 +353,6 @@ export default function HomePage() {
   const selectWeeklyReview = (weekEnd: string) => {
     setCurrentId(null);
     setCurrentWeeklyEnd(weekEnd);
-    void generateWeeklyReview(weekEnd);
   };
 
   const selectDailyReview = (id: string) => {
@@ -358,11 +361,11 @@ export default function HomePage() {
   };
 
   const toggleMonth = (monthKey: string) => {
-    setCollapsedMonths((prev) => {
-      const next = new Set(prev);
+    setMonthCollapseState((previous) => {
+      const next = new Set(previous.collapsedMonths);
       if (next.has(monthKey)) next.delete(monthKey);
       else next.add(monthKey);
-      return next;
+      return { ...previous, collapsedMonths: next };
     });
   };
 
@@ -372,12 +375,6 @@ export default function HomePage() {
       return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "long" }).format(date);
     }
     return new Intl.DateTimeFormat("en-US", { year: "numeric", month: "long" }).format(date);
-  };
-
-  const getDefaultCollapsedMonths = (reviews: ReviewRecord[]) => {
-    const currentMonth = todayKey().slice(0, 7);
-    const monthKeys = Array.from(new Set(reviews.map((review) => review.date.slice(0, 7))));
-    return new Set(monthKeys.filter((monthKey) => monthKey !== currentMonth));
   };
 
   const setReviewsDirect = (next: ReviewRecord[]) => {
@@ -635,9 +632,42 @@ export default function HomePage() {
 
     const weeklyRaw = window.localStorage.getItem(WEEKLY_SUMMARY_KEY);
     if (weeklyRaw) {
-      try { setWeeklySummaries(JSON.parse(weeklyRaw) as Record<string, WeeklySummaryState>); }
-      catch (error) { console.error("Weekly summary cache read failed", error); }
+      try {
+        const parsed = JSON.parse(weeklyRaw) as Record<string, WeeklySummaryState>;
+        const migrated = Object.fromEntries(
+          Object.entries(parsed).map(([key, value]) => [key.includes(":") ? key : weeklySummaryKey(key, "zh"), value])
+        );
+        setWeeklySummaries(migrated);
+      } catch (error) {
+        console.error("Weekly summary cache read failed", error);
+      }
     }
+
+    const syncWeeklySummaries = async () => {
+      try {
+        const response = await fetch("/api/weekly-summary");
+        if (!response.ok) throw new Error("Weekly summary read failed");
+        const data = (await response.json()) as {
+          summaries?: Array<{
+            weekEnd: string;
+            language: Lang;
+            summary: string;
+            fingerprint?: string;
+          }>;
+        };
+        const remote = Object.fromEntries(
+          (data.summaries ?? []).map((item) => [
+            weeklySummaryKey(item.weekEnd, item.language),
+            { status: "ready" as const, summary: item.summary, fingerprint: item.fingerprint }
+          ])
+        );
+        setWeeklySummaries((previous) => ({ ...previous, ...remote }));
+      } catch (error) {
+        console.error("Weekly summary sync failed", error);
+      }
+    };
+
+    void syncWeeklySummaries();
   }, []);
 
   useEffect(() => {
@@ -685,10 +715,21 @@ export default function HomePage() {
   useEffect(() => { latestReviews.current = reviews; }, [reviews]);
 
   useEffect(() => {
-    if (initialCollapseInitialized.current) return;
+    if (currentWeeklyEnd) void generateWeeklyReview(currentWeeklyEnd);
+    // A saved summary is immutable until the explicit regenerate action.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentWeeklyEnd, lang]);
+
+  useEffect(() => {
     if (!reviews.length) return;
-    setCollapsedMonths(getDefaultCollapsedMonths(reviews));
-    initialCollapseInitialized.current = true;
+    const monthKeys = Array.from(new Set(reviews.map((review) => review.date.slice(0, 7))));
+    setMonthCollapseState((state) =>
+      reconcileMonthCollapseState({
+        monthKeys,
+        currentMonth: todayKey().slice(0, 7),
+        state
+      })
+    );
   }, [reviews]);
 
   useEffect(() => {
@@ -945,7 +986,7 @@ export default function HomePage() {
                 </button>
               </div>
 
-              <div className="flex flex-col gap-3">
+              <div className="flex max-h-[calc(100vh-15rem)] flex-col gap-3 overflow-y-auto overscroll-contain pr-1">
                 {groupedReviews.map(([monthKey, monthReviews]) => {
                   const isCollapsed = collapsedMonths.has(monthKey);
                   return (
@@ -1033,7 +1074,7 @@ export default function HomePage() {
             {!currentReview && !currentWeeklyEnd && <p className="text-sm text-slate-500">{t.emptyTip}</p>}
 
             {currentWeeklyEnd && (() => {
-              const weekly = weeklySummaries[currentWeeklyEnd] ?? { status: "idle" as const };
+              const weekly = weeklySummaries[weeklySummaryKey(currentWeeklyEnd, lang)] ?? { status: "idle" as const };
               return (
                 <section className="rounded-2xl border border-violet-200 bg-gradient-to-br from-violet-50 to-white p-6">
                   <div className="mb-4 flex items-center justify-between gap-3">
