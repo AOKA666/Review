@@ -3,6 +3,7 @@
 import { ChangeEvent, Fragment, KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
 import { reconcileMonthCollapseState } from "../lib/history-months";
 import { LogItem, QaPair, ReviewRecord, TodayLog } from "../lib/review";
+import { reviewsToMarkdown } from "../lib/review-markdown";
 import { parseWeeklySummary } from "../lib/weekly-summary";
 import {
   shouldGenerateWeeklySummary,
@@ -26,6 +27,7 @@ const i18n = {
     langZh: "中文",
     langEn: "EN",
     newToday: "新建记录",
+    exportMarkdown: "导出 Markdown",
     collapse: "折叠",
     updatedAt: "更新于",
     emptyRecord: "暂无记录",
@@ -62,6 +64,7 @@ const i18n = {
     langZh: "中文",
     langEn: "EN",
     newToday: "New entry",
+    exportMarkdown: "Export Markdown",
     collapse: "Collapse",
     updatedAt: "Updated",
     emptyRecord: "No records yet",
@@ -502,6 +505,20 @@ export default function HomePage() {
     })();
   };
 
+  const handleExportMarkdown = () => {
+    if (typeof window === "undefined" || !reviews.length) return;
+    const markdown = reviewsToMarkdown(reviews);
+    const blob = new Blob([markdown], { type: "text/markdown;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `review-log-${todayKey()}.md`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  };
+
   const updateCurrentReview = (updater: (review: ReviewRecord) => ReviewRecord) => {
     if (!currentId) return;
     updateReviews((prev) => prev.map((review) => (review.id === currentId ? updater(review) : review)));
@@ -925,6 +942,14 @@ export default function HomePage() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h1 className="text-2xl font-semibold leading-tight">{t.title}</h1>
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={handleExportMarkdown}
+                disabled={!reviews.length}
+              >
+                {t.exportMarkdown}
+              </button>
               <div className="inline-flex rounded-full border border-slate-200 bg-white p-0.5 text-xs">
                 <button
                   type="button"
