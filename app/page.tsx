@@ -41,6 +41,7 @@ const i18n = {
     newToday: "新建记录",
     exportMarkdown: "导出 Markdown",
     obsidian: { unsupported: "浏览器不支持 Obsidian 同步", disconnected: "同步到 Obsidian", connected: "Obsidian 已连接", permission: "重新授权 Obsidian", syncing: "同步到 Obsidian…", synced: "已同步到 Obsidian", error: "Obsidian 同步失败" },
+    changeObsidianFolder: "更换 Obsidian 文件夹",
     collapse: "折叠",
     updatedAt: "更新于",
     emptyRecord: "暂无记录",
@@ -79,6 +80,7 @@ const i18n = {
     newToday: "New entry",
     exportMarkdown: "Export Markdown",
     obsidian: { unsupported: "Obsidian sync unsupported", disconnected: "Sync to Obsidian", connected: "Obsidian connected", permission: "Authorize Obsidian", syncing: "Syncing to Obsidian…", synced: "Synced to Obsidian", error: "Obsidian sync failed" },
+    changeObsidianFolder: "Change Obsidian folder",
     collapse: "Collapse",
     updatedAt: "Updated",
     emptyRecord: "No records yet",
@@ -451,15 +453,13 @@ export default function HomePage() {
   const handleObsidianConnect = async () => {
     if (!supportsObsidianSync()) { setObsidianStatus("unsupported"); return; }
     try {
-      let handle = obsidianDirectoryRef.current;
-      if (!handle) {
-        handle = await pickDirectory();
-        await saveDirectoryHandle(handle);
-        obsidianDirectoryRef.current = handle;
-      } else if (!(await requestWritePermission(handle))) {
+      const handle = await pickDirectory();
+      if (!(await requestWritePermission(handle))) {
         setObsidianStatus("permission");
         return;
       }
+      await saveDirectoryHandle(handle);
+      obsidianDirectoryRef.current = handle;
       setObsidianStatus("connected");
       await syncCurrentReviewToObsidian(latestReviews.current);
     } catch (error) {
@@ -1024,7 +1024,9 @@ export default function HomePage() {
                 disabled={obsidianStatus === "syncing" || obsidianStatus === "unsupported"}
                 title={t.obsidian[obsidianStatus]}
               >
-                {t.obsidian[obsidianStatus]}
+                {obsidianStatus === "connected" || obsidianStatus === "synced"
+                  ? t.changeObsidianFolder
+                  : t.obsidian[obsidianStatus]}
               </button>
               <button
                 type="button"
