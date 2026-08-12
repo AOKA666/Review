@@ -4,6 +4,17 @@ import { ChangeEvent, Fragment, KeyboardEvent, useEffect, useMemo, useRef, useSt
 import { reconcileMonthCollapseState } from "../lib/history-months";
 import { LogItem, QaPair, ReviewRecord, TodayLog } from "../lib/review";
 import { reviewsToMarkdown } from "../lib/review-markdown";
+import {
+  hasWritePermission,
+  loadDirectoryHandle,
+  ObsidianDirectoryHandle,
+  ObsidianSyncStatus,
+  pickDirectory,
+  requestWritePermission,
+  saveDirectoryHandle,
+  supportsObsidianSync,
+  syncReviewToDirectory
+} from "../lib/obsidian-sync";
 import { parseWeeklySummary } from "../lib/weekly-summary";
 import {
   shouldGenerateWeeklySummary,
@@ -28,6 +39,7 @@ const i18n = {
     langEn: "EN",
     newToday: "新建记录",
     exportMarkdown: "导出 Markdown",
+    obsidian: { unsupported: "浏览器不支持 Obsidian 同步", disconnected: "同步到 Obsidian", connected: "Obsidian 已连接", permission: "重新授权 Obsidian", syncing: "同步到 Obsidian…", synced: "已同步到 Obsidian", error: "Obsidian 同步失败" },
     collapse: "折叠",
     updatedAt: "更新于",
     emptyRecord: "暂无记录",
@@ -65,6 +77,7 @@ const i18n = {
     langEn: "EN",
     newToday: "New entry",
     exportMarkdown: "Export Markdown",
+    obsidian: { unsupported: "Obsidian sync unsupported", disconnected: "Sync to Obsidian", connected: "Obsidian connected", permission: "Authorize Obsidian", syncing: "Syncing to Obsidian…", synced: "Synced to Obsidian", error: "Obsidian sync failed" },
     collapse: "Collapse",
     updatedAt: "Updated",
     emptyRecord: "No records yet",
@@ -236,6 +249,7 @@ export default function HomePage() {
   const [currentWeeklyEnd, setCurrentWeeklyEnd] = useState<string | null>(null);
   const [weeklySummaries, setWeeklySummaries] = useState<Record<string, WeeklySummaryState>>({});
   const [status, setStatus] = useState<SaveStatus>("ready");
+  const [obsidianStatus, setObsidianStatus] = useState<ObsidianSyncStatus>("disconnected");
   const [isHistoryCollapsed, setIsHistoryCollapsed] = useState(false);
   const [expandedItemIds, setExpandedItemIds] = useState<Record<string, boolean>>({});
   const [monthCollapseState, setMonthCollapseState] = useState(() => ({
@@ -252,6 +266,7 @@ export default function HomePage() {
     | { type: "qa"; column: LogColumn; itemId: string; qaId: string; field: "question" | "answer" };
   const pendingFocusRef = useRef<PendingFocusTarget | null>(null);
   const dateInputRef = useRef<HTMLInputElement | null>(null);
+  const obsidianDirectoryRef = useRef<ObsidianDirectoryHandle | null>(null);
 
   const adjustTextAreaHeight = (target: HTMLTextAreaElement) => {
     target.style.height = "auto";
@@ -410,6 +425,45 @@ export default function HomePage() {
       throw new Error(failure || "Supabase write failed");
     }
   };
+  const syncCurrentReviewToObsidian = async (payload: ReviewRecord[]) => {
+    const handle = obsidianDirectoryRef.current;
+    const review = payload.find((item) => item.id === currentIdRef.current);
+    if (!handle || !review) return;
+    if (!(await hasWritePermission(handle))) {
+      setObsidianStatus("permission");
+      return;
+    }
+    setObsidianStatus("syncing");
+    try {
+      await syncReviewToDirectory(handle, review);
+      setObsidianStatus("synced");
+    } catch (error) {
+      console.error("Obsidian sync failed", error);
+      setObsidianStatus("error");
+    }
+  };
+
+  const handleObsidianConnect = async () => {
+    if (!supportsObsidianSync()) { setObsidianStatus("unsupported"); return; }
+    try {
+      let handle = obsidianDirectoryRef.current;
+      if (!handle) {
+        handle = await pickDirectory();
+        await saveDirectoryHandle(handle);
+        obsidianDirectoryRef.current = handle;
+      } else if (!(await requestWritePermission(handle))) {
+        setObsidianStatus("permission");
+        return;
+      }
+      setObsidianStatus("connected");
+      await syncCurrentReviewToObsidian(latestReviews.current);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      console.error("Obsidian connection failed", error);
+      setObsidianStatus("error");
+    }
+  };
+
   const persistNow = async () => {
     if (typeof window === "undefined") return;
     if (!latestReviews.current.length) return;
@@ -422,6 +476,7 @@ export default function HomePage() {
 
     setReviewsDirect(payload);
     persistLocally(payload);
+    void syncCurrentReviewToObsidian(payload);
 
     try { await saveToSupabase(payload); setStatus("saved"); }
     catch (error) { console.error("Supabase write failed", error); setStatus("error"); }
@@ -641,6 +696,19 @@ export default function HomePage() {
       upsertItem(review, column, itemId, (item) => ({ ...item, reflection_qas: syncQaOrder(item.reflection_qas.filter((qa) => qa.id !== qaId)) }))
     );
   };
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    if (!supportsObsidianSync()) { setObsidianStatus("unsupported"); return; }
+    void loadDirectoryHandle().then(async (handle) => {
+      if (!handle) return;
+      obsidianDirectoryRef.current = handle;
+      setObsidianStatus((await hasWritePermission(handle)) ? "connected" : "permission");
+    }).catch((error) => {
+      console.error("Obsidian folder restore failed", error);
+      setObsidianStatus("error");
+    });
+  }, []);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -942,6 +1010,15 @@ export default function HomePage() {
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h1 className="text-2xl font-semibold leading-tight">{t.title}</h1>
             <div className="flex items-center gap-2">
+              <button
+                type="button"
+                className={`rounded-full border px-3 py-1 text-xs font-medium transition ${obsidianStatus === "synced" || obsidianStatus === "connected" ? "border-violet-200 bg-violet-50 text-violet-700" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}
+                onClick={() => void handleObsidianConnect()}
+                disabled={obsidianStatus === "syncing" || obsidianStatus === "unsupported"}
+                title={t.obsidian[obsidianStatus]}
+              >
+                {t.obsidian[obsidianStatus]}
+              </button>
               <button
                 type="button"
                 className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"

@@ -33,3 +33,22 @@ export const reviewsToMarkdown = (reviews: ReviewRecord[]) => {
   return `${lines.join("\n").trimEnd()}\n`;
 };
 
+export const reviewToMarkdown = (review: ReviewRecord) => {
+  const lines = [
+    "---",
+    `date: ${review.date}`,
+    "type: daily-review",
+    "tags:",
+    "  - daily-review",
+    "---",
+    "",
+    `# ${review.date} 复盘`,
+    "",
+    "## 红榜",
+    ""
+  ];
+  lines.push(...renderItems(review.today_log.red));
+  lines.push("## 黑榜", "");
+  lines.push(...renderItems(review.today_log.black));
+  return `${lines.join("\n").trimEnd()}\n`;
+};
