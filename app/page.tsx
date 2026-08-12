@@ -4,6 +4,7 @@ import { ChangeEvent, Fragment, KeyboardEvent, useEffect, useMemo, useRef, useSt
 import { reconcileMonthCollapseState } from "../lib/history-months";
 import { LogItem, QaPair, ReviewRecord, TodayLog } from "../lib/review";
 import { reviewsToMarkdown } from "../lib/review-markdown";
+import { mergeReviewsByDate } from "../lib/review-merge";
 import { parseWeeklySummary } from "../lib/weekly-summary";
 import {
   shouldGenerateWeeklySummary,
@@ -388,9 +389,13 @@ export default function HomePage() {
 
   const updateReviews = (updater: (prev: ReviewRecord[]) => ReviewRecord[]) => {
     setReviews((prev) => {
-      const updated = updater(prev);
+      const now = new Date().toISOString();
+      const updated = updater(prev).map((review) =>
+        review.id === currentIdRef.current ? { ...review, updated_at: now } : review
+      );
       const sorted = sortReviews(updated.map(normalizeReview));
       latestReviews.current = sorted;
+      persistLocally(sorted);
       return sorted;
     });
   };
@@ -713,7 +718,9 @@ export default function HomePage() {
         if (!response.ok) throw new Error("Supabase read failed");
         const data = (await response.json()) as { reviews: ReviewRecord[] };
         if (Array.isArray(data?.reviews)) {
-          hydrateReviewList(data.reviews.map(normalizeReview));
+          const remote = data.reviews.map(normalizeReview);
+          const local = latestReviews.current;
+          hydrateReviewList(mergeReviewsByDate(local, remote));
           setStatus("saved");
         }
       } catch (error) {
