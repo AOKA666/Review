@@ -4,6 +4,7 @@ import { ChangeEvent, Fragment, KeyboardEvent, useEffect, useMemo, useRef, useSt
 import { reconcileMonthCollapseState } from "../lib/history-months";
 import { LogItem, QaPair, ReviewRecord, TodayLog } from "../lib/review";
 import { reviewsToMarkdown } from "../lib/review-markdown";
+import { authorizeObsidianDirectory } from "../lib/obsidian-authorization";
 import {
   hasWritePermission,
   loadDirectoryHandle,
@@ -453,12 +454,15 @@ export default function HomePage() {
   const handleObsidianConnect = async () => {
     if (!supportsObsidianSync()) { setObsidianStatus("unsupported"); return; }
     try {
-      const handle = await pickDirectory();
-      if (!(await requestWritePermission(handle))) {
+      const handle = await authorizeObsidianDirectory(obsidianDirectoryRef.current, {
+        pick: pickDirectory,
+        requestPermission: requestWritePermission,
+        save: saveDirectoryHandle
+      });
+      if (!handle) {
         setObsidianStatus("permission");
         return;
       }
-      await saveDirectoryHandle(handle);
       obsidianDirectoryRef.current = handle;
       setObsidianStatus("connected");
       await syncCurrentReviewToObsidian(latestReviews.current);
