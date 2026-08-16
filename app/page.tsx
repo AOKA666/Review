@@ -17,6 +17,7 @@ import {
   syncReviewToDirectory
 } from "../lib/obsidian-sync";
 import { mergeReviewsByDate } from "../lib/review-merge";
+import { persistWithLocalFallback } from "../lib/save-status";
 import { parseWeeklySummary } from "../lib/weekly-summary";
 import {
   shouldGenerateWeeklySummary,
@@ -419,9 +420,15 @@ export default function HomePage() {
   };
 
   const persistLocally = (list: ReviewRecord[]) => {
-    if (typeof window === "undefined") return;
-    try { localStorage.setItem(STORAGE_KEY, JSON.stringify(sortReviews(list))); }
-    catch (error) { console.error("Local save failed", error); setStatus("error"); }
+    if (typeof window === "undefined") return false;
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(sortReviews(list)));
+      return true;
+    } catch (error) {
+      console.error("Local save failed", error);
+      setStatus("error");
+      return false;
+    }
   };
 
   const saveToSupabase = async (payload: ReviewRecord[]) => {
@@ -484,11 +491,13 @@ export default function HomePage() {
     const payload = sortReviews(updated);
 
     setReviewsDirect(payload);
-    persistLocally(payload);
     void syncCurrentReviewToObsidian(payload);
-
-    try { await saveToSupabase(payload); setStatus("saved"); }
-    catch (error) { console.error("Supabase write failed", error); setStatus("error"); }
+    const nextStatus = await persistWithLocalFallback({
+      saveLocal: () => persistLocally(payload),
+      saveRemote: () => saveToSupabase(payload),
+      reportRemoteError: (error) => console.warn("Supabase sync deferred; local copy is saved", error)
+    });
+    setStatus(nextStatus);
   };
 
   const scheduleSave = () => {
