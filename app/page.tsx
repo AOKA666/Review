@@ -495,7 +495,7 @@ export default function HomePage() {
     const nextStatus = await persistWithLocalFallback({
       saveLocal: () => persistLocally(payload),
       saveRemote: () => saveToSupabase(payload),
-      reportRemoteError: (error) => console.warn("Supabase sync deferred; local copy is saved", error)
+      reportRemoteError: (error) => console.warn("Supabase save failed; local cache retained", error)
     });
     setStatus(nextStatus);
   };

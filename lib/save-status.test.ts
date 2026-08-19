@@ -3,7 +3,7 @@ import test from "node:test";
 
 import { persistWithLocalFallback } from "./save-status.ts";
 
-test("keeps the saved status when cloud sync fails after local persistence succeeds", async () => {
+test("reports an error when cloud sync fails even after local persistence succeeds", async () => {
   let reportedError: unknown;
 
   const status = await persistWithLocalFallback({
@@ -12,7 +12,7 @@ test("keeps the saved status when cloud sync fails after local persistence succe
     reportRemoteError: (error) => { reportedError = error; }
   });
 
-  assert.equal(status, "saved");
+  assert.equal(status, "error");
   assert.match(String(reportedError), /temporary cloud failure/);
 });
 

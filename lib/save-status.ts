@@ -18,6 +18,6 @@ export const persistWithLocalFallback = async ({
     return savedLocally ? "saved" : "error";
   } catch (error) {
     reportRemoteError(error);
-    return savedLocally ? "saved" : "error";
+    return "error";
   }
 };
