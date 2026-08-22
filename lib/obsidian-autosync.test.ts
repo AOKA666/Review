@@ -24,8 +24,19 @@ test("handled Obsidian sync failures do not trigger the development error overla
 
 test("Obsidian sync remains available as an explicit user action", async () => {
   const source = await readFile(pagePath, "utf8");
-  const connectHandler = source.match(/const handleObsidianConnect = async \(\) => \{([\s\S]*?)\n  \};\n\n  const persistNow/)?.[1];
+  const connectHandler = source.match(/const handleObsidianConnect = async \(\) => \{([\s\S]*?)\n  \};/)?.[1];
 
   assert.ok(connectHandler, "handleObsidianConnect function should exist");
   assert.match(connectHandler, /await syncCurrentReviewToObsidian\(latestReviews\.current\)/);
+});
+
+test("an authorized Obsidian folder can be explicitly replaced", async () => {
+  const source = await readFile(pagePath, "utf8");
+  const changeHandler = source.match(/const handleObsidianFolderChange = async \(\) => \{([\s\S]*?)\n  \};/)?.[1];
+
+  assert.ok(changeHandler, "handleObsidianFolderChange function should exist");
+  assert.match(changeHandler, /authorizeObsidianDirectory\(null,/);
+  assert.match(changeHandler, /obsidianDirectoryRef\.current = handle/);
+  assert.match(source, /onClick=\{\(\) => void handleObsidianFolderChange\(\)\}/);
+  assert.match(source, /\{t\.changeObsidianFolder\}/);
 });

@@ -43,7 +43,8 @@ const i18n = {
     newToday: "新建记录",
     exportMarkdown: "导出 Markdown",
     obsidian: { unsupported: "浏览器不支持 Obsidian 同步", disconnected: "同步到 Obsidian", connected: "Obsidian 已连接", permission: "重新授权 Obsidian", syncing: "同步到 Obsidian…", synced: "已同步到 Obsidian", error: "Obsidian 同步失败" },
-    changeObsidianFolder: "手动同步 Obsidian",
+    syncObsidianNow: "立即同步 Obsidian",
+    changeObsidianFolder: "更换 Obsidian 文件夹",
     collapse: "折叠",
     updatedAt: "更新于",
     emptyRecord: "暂无记录",
@@ -82,7 +83,8 @@ const i18n = {
     newToday: "New entry",
     exportMarkdown: "Export Markdown",
     obsidian: { unsupported: "Obsidian sync unsupported", disconnected: "Sync to Obsidian", connected: "Obsidian connected", permission: "Authorize Obsidian", syncing: "Syncing to Obsidian…", synced: "Synced to Obsidian", error: "Obsidian sync failed" },
-    changeObsidianFolder: "Sync Obsidian now",
+    syncObsidianNow: "Sync Obsidian now",
+    changeObsidianFolder: "Change Obsidian folder",
     collapse: "Collapse",
     updatedAt: "Updated",
     emptyRecord: "No records yet",
@@ -477,6 +479,29 @@ export default function HomePage() {
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       console.error("Obsidian connection failed", error);
+      setObsidianStatus("error");
+    }
+  };
+
+  const handleObsidianFolderChange = async () => {
+    if (!supportsObsidianSync()) { setObsidianStatus("unsupported"); return; }
+    try {
+      const handle = await authorizeObsidianDirectory(null, {
+        pick: pickDirectory,
+        hasPermission: hasWritePermission,
+        requestPermission: requestWritePermission,
+        save: saveDirectoryHandle
+      });
+      if (!handle) {
+        setObsidianStatus("permission");
+        return;
+      }
+      obsidianDirectoryRef.current = handle;
+      setObsidianStatus("connected");
+      await syncCurrentReviewToObsidian(latestReviews.current);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      console.error("Obsidian folder change failed", error);
       setObsidianStatus("error");
     }
   };
@@ -1039,9 +1064,18 @@ export default function HomePage() {
                 title={t.obsidian[obsidianStatus]}
               >
                 {obsidianStatus === "connected" || obsidianStatus === "synced"
-                  ? t.changeObsidianFolder
+                  ? t.syncObsidianNow
                   : t.obsidian[obsidianStatus]}
               </button>
+              {(obsidianStatus === "connected" || obsidianStatus === "synced" || obsidianStatus === "permission" || obsidianStatus === "error") && (
+                <button
+                  type="button"
+                  className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+                  onClick={() => void handleObsidianFolderChange()}
+                >
+                  {t.changeObsidianFolder}
+                </button>
+              )}
               <button
                 type="button"
                 className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-600 transition hover:border-slate-300 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
