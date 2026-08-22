@@ -43,7 +43,7 @@ const i18n = {
     newToday: "新建记录",
     exportMarkdown: "导出 Markdown",
     obsidian: { unsupported: "浏览器不支持 Obsidian 同步", disconnected: "同步到 Obsidian", connected: "Obsidian 已连接", permission: "重新授权 Obsidian", syncing: "同步到 Obsidian…", synced: "已同步到 Obsidian", error: "Obsidian 同步失败" },
-    changeObsidianFolder: "更换 Obsidian 文件夹",
+    changeObsidianFolder: "手动同步 Obsidian",
     collapse: "折叠",
     updatedAt: "更新于",
     emptyRecord: "暂无记录",
@@ -82,7 +82,7 @@ const i18n = {
     newToday: "New entry",
     exportMarkdown: "Export Markdown",
     obsidian: { unsupported: "Obsidian sync unsupported", disconnected: "Sync to Obsidian", connected: "Obsidian connected", permission: "Authorize Obsidian", syncing: "Syncing to Obsidian…", synced: "Synced to Obsidian", error: "Obsidian sync failed" },
-    changeObsidianFolder: "Change Obsidian folder",
+    changeObsidianFolder: "Sync Obsidian now",
     collapse: "Collapse",
     updatedAt: "Updated",
     emptyRecord: "No records yet",
@@ -453,7 +453,7 @@ export default function HomePage() {
       await syncReviewToDirectory(handle, review);
       setObsidianStatus("synced");
     } catch (error) {
-      console.error("Obsidian sync failed", error);
+      console.warn("Obsidian sync failed", error);
       setObsidianStatus("error");
     }
   };
@@ -463,6 +463,7 @@ export default function HomePage() {
     try {
       const handle = await authorizeObsidianDirectory(obsidianDirectoryRef.current, {
         pick: pickDirectory,
+        hasPermission: hasWritePermission,
         requestPermission: requestWritePermission,
         save: saveDirectoryHandle
       });
