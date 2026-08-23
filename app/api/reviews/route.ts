@@ -1,12 +1,23 @@
 import { NextResponse } from "next/server";
 import { getSupabaseAdmin } from "../../../lib/supabase";
 import { ReviewRecord, LogItem, QaPair } from "../../../lib/review";
+import { buildJournalUpsertRows } from "../../../lib/journal-upsert";
 
 const OWNER_KEY = "default";
 
 type SelectResponse =
   | { reviews: ReviewRecord[]; updated_at: string | null }
   | { reviews: []; updated_at: null };
+
+type SaveResponse = { ok: true } | { ok: false; error: string };
+
+const saveFailure = (stage: string, error: unknown) => {
+  console.error(`Supabase POST ${stage} error`, error);
+  return NextResponse.json(
+    { ok: false, error: stage },
+    { status: 500 }
+  );
+};
 
 /* ============================================================
    GET — 从规范化表读取并组装成前端期望的 ReviewRecord[]
@@ -135,14 +146,14 @@ export async function GET(): Promise<NextResponse<SelectResponse>> {
    ============================================================ */
 export async function POST(
   request: Request
-): Promise<NextResponse<{ ok: boolean }>> {
+): Promise<NextResponse<SaveResponse>> {
   let supabase;
   try {
     supabase = getSupabaseAdmin();
   } catch (error) {
     console.error("Supabase init error", error);
     return NextResponse.json(
-      { ok: false },
+      { ok: false, error: "supabase_init" },
       { status: 500, statusText: "Supabase env not configured" }
     );
   }
@@ -152,14 +163,14 @@ export async function POST(
     payload = await request.json();
   } catch (error) {
     return NextResponse.json(
-      { ok: false },
+      { ok: false, error: "invalid_json" },
       { status: 400, statusText: "Invalid JSON payload" }
     );
   }
 
   if (!Array.isArray(payload.reviews)) {
     return NextResponse.json(
-      { ok: false },
+      { ok: false, error: "invalid_reviews" },
       { status: 400, statusText: "Expected reviews array" }
     );
   }
@@ -168,34 +179,47 @@ export async function POST(
   const allItemIds = new Set<string>();
   const allQaIds = new Set<string>();
 
-  // ---------- Step 1: 批量 upsert journals ----------
-  const journalsData = payload.reviews.map((review) => ({
-    id: review.id,
-    owner: OWNER_KEY,
-    journal_date: review.date,
-    created_at: review.created_at,
-    updated_at: review.updated_at,
-  }));
+  // ---------- Step 1: 读取数据库中的规范 journal id ----------
+  // 本地缓存可能为同一天保留了不同 id。必须复用数据库 id，避免 upsert
+  // 尝试修改被 journal_items 外键引用的 journals 主键。
+  let existingJournals: Array<{ id: string; journal_date: string }> = [];
+  if (datesToKeep.length > 0) {
+    const { data, error } = await supabase
+      .from("journals")
+      .select("id, journal_date")
+      .eq("owner", OWNER_KEY)
+      .in("journal_date", datesToKeep);
 
-  const { error: journalsUpsertError } = await supabase
-    .from("journals")
-    .upsert(journalsData, { onConflict: "owner,journal_date" });
-
-  if (journalsUpsertError) {
-    console.error("Supabase POST journals upsert error", journalsUpsertError);
-    return NextResponse.json({ ok: false }, { status: 500 });
+    if (error || !data) return saveFailure("journals_lookup", error);
+    existingJournals = data;
   }
 
-  // ---------- Step 2: 查询刚写入的 journals，建立 date -> id 映射 ----------
-  const { data: insertedJournals, error: journalsQueryError } = await supabase
-    .from("journals")
-    .select("id, journal_date")
-    .eq("owner", OWNER_KEY)
-    .in("journal_date", datesToKeep);
+  // ---------- Step 2: 批量 upsert journals ----------
+  const journalsData = buildJournalUpsertRows({
+    owner: OWNER_KEY,
+    reviews: payload.reviews,
+    existing: existingJournals
+  });
 
-  if (journalsQueryError || !insertedJournals) {
-    console.error("Supabase POST journals query error", journalsQueryError);
-    return NextResponse.json({ ok: false }, { status: 500 });
+  if (journalsData.length > 0) {
+    const { error } = await supabase
+      .from("journals")
+      .upsert(journalsData, { onConflict: "owner,journal_date" });
+
+    if (error) return saveFailure("journals_upsert", error);
+  }
+
+  // ---------- Step 3: 查询刚写入的 journals，建立 date -> id 映射 ----------
+  let insertedJournals: Array<{ id: string; journal_date: string }> = [];
+  if (datesToKeep.length > 0) {
+    const { data, error } = await supabase
+      .from("journals")
+      .select("id, journal_date")
+      .eq("owner", OWNER_KEY)
+      .in("journal_date", datesToKeep);
+
+    if (error || !data) return saveFailure("journals_query", error);
+    insertedJournals = data;
   }
 
   const dateToId = new Map(insertedJournals.map((j) => [j.journal_date, j.id]));
@@ -274,8 +298,7 @@ export async function POST(
       .upsert(itemsData, { onConflict: "id" });
 
     if (itemsUpsertError) {
-      console.error("Supabase POST items upsert error", itemsUpsertError);
-      return NextResponse.json({ ok: false }, { status: 500 });
+      return saveFailure("items_upsert", itemsUpsertError);
     }
   }
 
@@ -313,8 +336,7 @@ export async function POST(
       .upsert(qasData, { onConflict: "id" });
 
     if (qasUpsertError) {
-      console.error("Supabase POST qas upsert error", qasUpsertError);
-      return NextResponse.json({ ok: false }, { status: 500 });
+      return saveFailure("qas_upsert", qasUpsertError);
     }
   }
 
