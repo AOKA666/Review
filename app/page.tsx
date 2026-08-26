@@ -446,16 +446,15 @@ export default function HomePage() {
     const handle = obsidianDirectoryRef.current;
     const review = payload.find((item) => item.id === currentIdRef.current);
     if (!handle || !review) return;
-    if (!(await hasWritePermission(handle))) {
-      setObsidianStatus("permission");
-      return;
-    }
-    setObsidianStatus("syncing");
     try {
+      if (!(await hasWritePermission(handle))) {
+        setObsidianStatus("permission");
+        return;
+      }
+      setObsidianStatus("syncing");
       await syncReviewToDirectory(handle, review);
       setObsidianStatus("synced");
-    } catch (error) {
-      console.warn("Obsidian sync failed", error);
+    } catch {
       setObsidianStatus("error");
     }
   };
@@ -478,7 +477,6 @@ export default function HomePage() {
       await syncCurrentReviewToObsidian(latestReviews.current);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
-      console.error("Obsidian connection failed", error);
       setObsidianStatus("error");
     }
   };
@@ -501,7 +499,6 @@ export default function HomePage() {
       await syncCurrentReviewToObsidian(latestReviews.current);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
-      console.error("Obsidian folder change failed", error);
       setObsidianStatus("error");
     }
   };
@@ -517,7 +514,6 @@ export default function HomePage() {
     const payload = sortReviews(updated);
 
     setReviewsDirect(payload);
-    void syncCurrentReviewToObsidian(payload);
     const nextStatus = await persistWithLocalFallback({
       saveLocal: () => persistLocally(payload),
       saveRemote: () => saveToSupabase(payload),
@@ -748,8 +744,7 @@ export default function HomePage() {
       if (!handle) return;
       obsidianDirectoryRef.current = handle;
       setObsidianStatus((await hasWritePermission(handle)) ? "connected" : "permission");
-    }).catch((error) => {
-      console.error("Obsidian folder restore failed", error);
+    }).catch(() => {
       setObsidianStatus("error");
     });
   }, []);
