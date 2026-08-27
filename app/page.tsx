@@ -42,8 +42,10 @@ const i18n = {
     langEn: "EN",
     newToday: "新建记录",
     exportMarkdown: "导出 Markdown",
-    obsidian: { unsupported: "浏览器不支持 Obsidian 同步", disconnected: "同步到 Obsidian", connected: "Obsidian 已连接", permission: "重新授权 Obsidian", syncing: "同步到 Obsidian…", synced: "已同步到 Obsidian", error: "Obsidian 同步失败" },
+    obsidian: { unsupported: "浏览器不支持 Obsidian 同步", disconnected: "Obsidian 未连接", connected: "有更新待同步", permission: "需要重新授权", syncing: "正在同步 Obsidian…", synced: "Obsidian 已同步", error: "Obsidian 同步失败" },
+    connectObsidian: "连接 Obsidian",
     syncObsidianNow: "立即同步 Obsidian",
+    obsidianSyncSuccess: "已成功同步到 Obsidian",
     changeObsidianFolder: "更换 Obsidian 文件夹",
     collapse: "折叠",
     updatedAt: "更新于",
@@ -82,8 +84,10 @@ const i18n = {
     langEn: "EN",
     newToday: "New entry",
     exportMarkdown: "Export Markdown",
-    obsidian: { unsupported: "Obsidian sync unsupported", disconnected: "Sync to Obsidian", connected: "Obsidian connected", permission: "Authorize Obsidian", syncing: "Syncing to Obsidian…", synced: "Synced to Obsidian", error: "Obsidian sync failed" },
+    obsidian: { unsupported: "Obsidian sync unsupported", disconnected: "Obsidian not connected", connected: "Changes waiting to sync", permission: "Authorization required", syncing: "Syncing to Obsidian…", synced: "Obsidian synced", error: "Obsidian sync failed" },
+    connectObsidian: "Connect Obsidian",
     syncObsidianNow: "Sync Obsidian now",
+    obsidianSyncSuccess: "Successfully synced to Obsidian",
     changeObsidianFolder: "Change Obsidian folder",
     collapse: "Collapse",
     updatedAt: "Updated",
@@ -257,6 +261,7 @@ export default function HomePage() {
   const [weeklySummaries, setWeeklySummaries] = useState<Record<string, WeeklySummaryState>>({});
   const [status, setStatus] = useState<SaveStatus>("ready");
   const [obsidianStatus, setObsidianStatus] = useState<ObsidianSyncStatus>("disconnected");
+  const [obsidianNotice, setObsidianNotice] = useState<string | null>(null);
   const [isHistoryCollapsed, setIsHistoryCollapsed] = useState(false);
   const [expandedItemIds, setExpandedItemIds] = useState<Record<string, boolean>>({});
   const [monthCollapseState, setMonthCollapseState] = useState(() => ({
@@ -409,6 +414,8 @@ export default function HomePage() {
   };
 
   const updateReviews = (updater: (prev: ReviewRecord[]) => ReviewRecord[]) => {
+    setObsidianStatus((previous) => previous === "synced" ? "connected" : previous);
+    setObsidianNotice(null);
     setReviews((prev) => {
       const now = new Date().toISOString();
       const updated = updater(prev).map((review) =>
@@ -454,6 +461,7 @@ export default function HomePage() {
       setObsidianStatus("syncing");
       await syncReviewToDirectory(handle, review);
       setObsidianStatus("synced");
+      setObsidianNotice(t.obsidianSyncSuccess);
     } catch {
       setObsidianStatus("error");
     }
@@ -837,6 +845,12 @@ export default function HomePage() {
     return () => { if (saveTimer.current) clearTimeout(saveTimer.current); };
   }, []);
 
+  useEffect(() => {
+    if (!obsidianNotice) return;
+    const timer = window.setTimeout(() => setObsidianNotice(null), 3000);
+    return () => window.clearTimeout(timer);
+  }, [obsidianNotice]);
+
   useEffect(() => { currentIdRef.current = currentId; }, [currentId]);
   useEffect(() => { latestReviews.current = reviews; }, [reviews]);
 
@@ -882,6 +896,13 @@ export default function HomePage() {
     status === "saving" ? "bg-amber-100 text-amber-700" :
     status === "saved" ? "bg-emerald-100 text-emerald-900" :
     status === "error" ? "bg-rose-100 text-rose-700 hover:bg-rose-200 cursor-pointer" :
+    "bg-slate-100 text-slate-600";
+
+  const obsidianBadgeClass =
+    obsidianStatus === "synced" ? "bg-emerald-100 text-emerald-800" :
+    obsidianStatus === "connected" ? "bg-amber-100 text-amber-800" :
+    obsidianStatus === "syncing" ? "bg-violet-100 text-violet-800" :
+    obsidianStatus === "error" || obsidianStatus === "permission" ? "bg-rose-100 text-rose-700" :
     "bg-slate-100 text-slate-600";
 
   const mainGridClass = isHistoryCollapsed ? "grid gap-5 lg:grid-cols-[1fr]" : "grid gap-5 lg:grid-cols-[280px_1fr]";
@@ -1045,6 +1066,14 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen bg-[#f5f5f7] text-[#0f172a]">
+      {obsidianNotice && (
+        <div
+          role="status"
+          className="fixed right-5 top-5 z-50 rounded-xl bg-emerald-600 px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-200"
+        >
+          ✓ {obsidianNotice}
+        </div>
+      )}
       <div className="mx-auto flex max-w-7xl flex-col gap-5 px-6 py-6">
         <header className="flex flex-col gap-1">
           <p className="text-xs uppercase tracking-[0.3em] text-slate-500">{t.topTag}</p>
@@ -1053,15 +1082,23 @@ export default function HomePage() {
             <div className="flex items-center gap-2">
               <button
                 type="button"
-                className={`rounded-full border px-3 py-1 text-xs font-medium transition ${obsidianStatus === "synced" || obsidianStatus === "connected" ? "border-violet-200 bg-violet-50 text-violet-700" : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"}`}
+                className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700 transition hover:border-violet-300 hover:bg-violet-50 disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={() => void handleObsidianConnect()}
                 disabled={obsidianStatus === "syncing" || obsidianStatus === "unsupported"}
                 title={t.obsidian[obsidianStatus]}
               >
                 {obsidianStatus === "connected" || obsidianStatus === "synced"
                   ? t.syncObsidianNow
-                  : t.obsidian[obsidianStatus]}
+                  : obsidianStatus === "disconnected"
+                    ? t.connectObsidian
+                    : t.obsidian[obsidianStatus]}
               </button>
+              <span
+                data-testid="obsidian-sync-status"
+                className={`rounded-full px-3 py-0.5 text-xs font-semibold ${obsidianBadgeClass}`}
+              >
+                {t.obsidian[obsidianStatus]}
+              </span>
               {(obsidianStatus === "connected" || obsidianStatus === "synced" || obsidianStatus === "permission" || obsidianStatus === "error") && (
                 <button
                   type="button"

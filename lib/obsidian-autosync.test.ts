@@ -43,6 +43,25 @@ test("Obsidian sync remains available as an explicit user action", async () => {
   assert.doesNotMatch(connectHandler, /console\.(?:error|warn)/);
 });
 
+test("editing after a successful Obsidian sync marks the current review as pending sync", async () => {
+  const source = await readFile(pagePath, "utf8");
+  const updateHandler = source.match(/const updateReviews = \(updater:[\s\S]*?\n  \};\n\n  const persistLocally/)?.[0];
+
+  assert.ok(updateHandler, "updateReviews function should exist");
+  assert.match(updateHandler, /setObsidianStatus\(\(previous\) => previous === "synced" \? "connected" : previous\)/);
+});
+
+test("Obsidian sync shows a success notice and a separate visible sync-status badge", async () => {
+  const source = await readFile(pagePath, "utf8");
+  const syncHandler = source.match(/const syncCurrentReviewToObsidian = async \(payload: ReviewRecord\[\]\) => \{([\s\S]*?)\n  \};\n\n  const handleObsidianConnect/)?.[1];
+
+  assert.ok(syncHandler, "syncCurrentReviewToObsidian function should exist");
+  assert.match(syncHandler, /setObsidianNotice\(t\.obsidianSyncSuccess\)/);
+  assert.match(source, /data-testid="obsidian-sync-status"/);
+  assert.match(source, /\{t\.obsidian\[obsidianStatus\]\}/);
+  assert.match(source, /role="status"/);
+});
+
 test("an authorized Obsidian folder can be explicitly replaced", async () => {
   const source = await readFile(pagePath, "utf8");
   const changeHandler = source.match(/const handleObsidianFolderChange = async \(\) => \{([\s\S]*?)\n  \};/)?.[1];
