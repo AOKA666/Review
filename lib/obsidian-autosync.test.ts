@@ -62,6 +62,17 @@ test("Obsidian sync shows a success notice and a separate visible sync-status ba
   assert.match(source, /role="status"/);
 });
 
+test("the three top actions keep the compact toolbar and add minimal icons", async () => {
+  const source = await readFile(pagePath, "utf8");
+
+  assert.match(source, /data-testid="top-action-toolbar"/);
+  assert.match(source, /data-action-icon="obsidian-sync"/);
+  assert.match(source, /data-action-icon="obsidian-folder"/);
+  assert.match(source, /data-action-icon="markdown-export"/);
+  assert.doesNotMatch(source, /t\.changeObsidianFolderHint/);
+  assert.doesNotMatch(source, /t\.exportMarkdownHint/);
+});
+
 test("an authorized Obsidian folder can be explicitly replaced", async () => {
   const source = await readFile(pagePath, "utf8");
   const changeHandler = source.match(/const handleObsidianFolderChange = async \(\) => \{([\s\S]*?)\n  \};/)?.[1];
