@@ -14,7 +14,7 @@ import {
   requestWritePermission,
   saveDirectoryHandle,
   supportsObsidianSync,
-  syncReviewToDirectory
+  syncReviewsToDirectory
 } from "../lib/obsidian-sync";
 import { mergeReviewsByDate } from "../lib/review-merge";
 import { persistWithLocalFallback } from "../lib/save-status";
@@ -449,17 +449,20 @@ export default function HomePage() {
       throw new Error(failure || "Supabase write failed");
     }
   };
-  const syncCurrentReviewToObsidian = async (payload: ReviewRecord[]) => {
+  const syncPendingReviewsToObsidian = async (payload: ReviewRecord[]) => {
     const handle = obsidianDirectoryRef.current;
-    const review = payload.find((item) => item.id === currentIdRef.current);
-    if (!handle || !review) return;
+    if (!handle || !payload.length) return;
     try {
       if (!(await hasWritePermission(handle))) {
         setObsidianStatus("permission");
         return;
       }
       setObsidianStatus("syncing");
-      await syncReviewToDirectory(handle, review);
+      const { failed } = await syncReviewsToDirectory(handle, payload);
+      if (failed.length) {
+        setObsidianStatus("error");
+        return;
+      }
       setObsidianStatus("synced");
       setObsidianNotice(t.obsidianSyncSuccess);
     } catch {
@@ -482,7 +485,7 @@ export default function HomePage() {
       }
       obsidianDirectoryRef.current = handle;
       setObsidianStatus("connected");
-      await syncCurrentReviewToObsidian(latestReviews.current);
+      await syncPendingReviewsToObsidian(latestReviews.current);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       setObsidianStatus("error");
@@ -504,7 +507,7 @@ export default function HomePage() {
       }
       obsidianDirectoryRef.current = handle;
       setObsidianStatus("connected");
-      await syncCurrentReviewToObsidian(latestReviews.current);
+      await syncPendingReviewsToObsidian(latestReviews.current);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       setObsidianStatus("error");

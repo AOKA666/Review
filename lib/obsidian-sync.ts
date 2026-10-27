@@ -54,11 +54,52 @@ export const hasWritePermission = async (handle: DirectoryHandle) =>
 export const requestWritePermission = async (handle: DirectoryHandle) =>
   (await handle.requestPermission({ mode: "readwrite" })) === "granted";
 
-export const syncReviewToDirectory = async (handle: DirectoryHandle, review: ReviewRecord) => {
-  const file = await handle.getFileHandle(`${review.date}.md`, { create: true });
-  const writable = await file.createWritable();
-  await writable.write(reviewToMarkdown(review));
-  await writable.close();
+const isNotFoundError = (error: unknown) =>
+  typeof error === "object" && error !== null && "name" in error
+  && (error as { name?: string }).name === "NotFoundError";
+
+const readExistingMarkdown = async (handle: DirectoryHandle, date: string) => {
+  try {
+    const file = await handle.getFileHandle(`${date}.md`);
+    return await (await file.getFile()).text();
+  } catch (error) {
+    if (isNotFoundError(error)) return null;
+    throw error;
+  }
+};
+
+export type ObsidianDirectorySyncResult = {
+  written: string[];
+  skipped: string[];
+  failed: string[];
+};
+
+export const syncReviewsToDirectory = async (
+  handle: DirectoryHandle,
+  reviews: ReviewRecord[]
+): Promise<ObsidianDirectorySyncResult> => {
+  const result: ObsidianDirectorySyncResult = { written: [], skipped: [], failed: [] };
+
+  for (const review of reviews) {
+    const markdown = reviewToMarkdown(review);
+    try {
+      // Unchanged files are left untouched so Obsidian and local file watchers
+      // are only woken up for dates that actually still need syncing.
+      if ((await readExistingMarkdown(handle, review.date)) === markdown) {
+        result.skipped.push(review.date);
+        continue;
+      }
+      const file = await handle.getFileHandle(`${review.date}.md`, { create: true });
+      const writable = await file.createWritable();
+      await writable.write(markdown);
+      await writable.close();
+      result.written.push(review.date);
+    } catch {
+      result.failed.push(review.date);
+    }
+  }
+
+  return result;
 };
 
 export type ObsidianDirectoryHandle = DirectoryHandle;

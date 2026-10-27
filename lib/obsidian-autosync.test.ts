@@ -3,20 +3,21 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 const pagePath = new URL("../app/page.tsx", import.meta.url);
+const readPageSource = async () => (await readFile(pagePath, "utf8")).replace(/\r\n/g, "\n");
 
 test("autosave does not wake Obsidian or external file watchers", async () => {
-  const source = await readFile(pagePath, "utf8");
+  const source = await readPageSource();
   const persistNow = source.match(/const persistNow = async \(\) => \{([\s\S]*?)\n  \};\n\n  const scheduleSave/)?.[1];
 
   assert.ok(persistNow, "persistNow function should exist");
-  assert.doesNotMatch(persistNow, /syncCurrentReviewToObsidian/);
+  assert.doesNotMatch(persistNow, /syncPendingReviewsToObsidian/);
 });
 
 test("all Obsidian autosync failures are handled without opening the development error overlay", async () => {
-  const source = await readFile(pagePath, "utf8");
-  const syncHandler = source.match(/const syncCurrentReviewToObsidian = async \(payload: ReviewRecord\[\]\) => \{([\s\S]*?)\n  \};\n\n  const handleObsidianConnect/)?.[1];
+  const source = await readPageSource();
+  const syncHandler = source.match(/const syncPendingReviewsToObsidian = async \(payload: ReviewRecord\[\]\) => \{([\s\S]*?)\n  \};\n\n  const handleObsidianConnect/)?.[1];
 
-  assert.ok(syncHandler, "syncCurrentReviewToObsidian function should exist");
+  assert.ok(syncHandler, "syncPendingReviewsToObsidian function should exist");
   assert.ok(
     syncHandler.indexOf("try {") < syncHandler.indexOf("await hasWritePermission(handle)"),
     "permission checks must be inside the handled sync operation"
@@ -26,7 +27,7 @@ test("all Obsidian autosync failures are handled without opening the development
 });
 
 test("restoring a stale Obsidian folder does not log an overlay-triggering console error", async () => {
-  const source = await readFile(pagePath, "utf8");
+  const source = await readPageSource();
   const restoreEffect = source.match(/void loadDirectoryHandle\(\)\.then\([\s\S]*?\n  \}, \[\]\);/)?.[0];
 
   assert.ok(restoreEffect, "Obsidian restore effect should exist");
@@ -35,16 +36,27 @@ test("restoring a stale Obsidian folder does not log an overlay-triggering conso
 });
 
 test("Obsidian sync remains available as an explicit user action", async () => {
-  const source = await readFile(pagePath, "utf8");
+  const source = await readPageSource();
   const connectHandler = source.match(/const handleObsidianConnect = async \(\) => \{([\s\S]*?)\n  \};/)?.[1];
 
   assert.ok(connectHandler, "handleObsidianConnect function should exist");
-  assert.match(connectHandler, /await syncCurrentReviewToObsidian\(latestReviews\.current\)/);
+  assert.match(connectHandler, /await syncPendingReviewsToObsidian\(latestReviews\.current\)/);
   assert.doesNotMatch(connectHandler, /console\.(?:error|warn)/);
 });
 
+test("manual sync covers every pending date instead of only the selected day", async () => {
+  const source = await readPageSource();
+  const syncHandler = source.match(/const syncPendingReviewsToObsidian = async \(payload: ReviewRecord\[\]\) => \{([\s\S]*?)\n  \};\n\n  const handleObsidianConnect/)?.[1];
+
+  assert.ok(syncHandler, "syncPendingReviewsToObsidian function should exist");
+  assert.doesNotMatch(syncHandler, /currentIdRef\.current/);
+  assert.match(syncHandler, /syncReviewsToDirectory\(handle, payload\)/);
+  assert.match(syncHandler, /failed\.length/);
+  assert.match(source, /const handleObsidianFolderChange[\s\S]*?await syncPendingReviewsToObsidian\(latestReviews\.current\)/);
+});
+
 test("editing after a successful Obsidian sync marks the current review as pending sync", async () => {
-  const source = await readFile(pagePath, "utf8");
+  const source = await readPageSource();
   const updateHandler = source.match(/const updateReviews = \(updater:[\s\S]*?\n  \};\n\n  const persistLocally/)?.[0];
 
   assert.ok(updateHandler, "updateReviews function should exist");
@@ -52,10 +64,10 @@ test("editing after a successful Obsidian sync marks the current review as pendi
 });
 
 test("Obsidian sync shows a success notice and a separate visible sync-status badge", async () => {
-  const source = await readFile(pagePath, "utf8");
-  const syncHandler = source.match(/const syncCurrentReviewToObsidian = async \(payload: ReviewRecord\[\]\) => \{([\s\S]*?)\n  \};\n\n  const handleObsidianConnect/)?.[1];
+  const source = await readPageSource();
+  const syncHandler = source.match(/const syncPendingReviewsToObsidian = async \(payload: ReviewRecord\[\]\) => \{([\s\S]*?)\n  \};\n\n  const handleObsidianConnect/)?.[1];
 
-  assert.ok(syncHandler, "syncCurrentReviewToObsidian function should exist");
+  assert.ok(syncHandler, "syncPendingReviewsToObsidian function should exist");
   assert.match(syncHandler, /setObsidianNotice\(t\.obsidianSyncSuccess\)/);
   assert.match(source, /data-testid="obsidian-sync-status"/);
   assert.match(source, /\{t\.obsidian\[obsidianStatus\]\}/);
@@ -63,7 +75,7 @@ test("Obsidian sync shows a success notice and a separate visible sync-status ba
 });
 
 test("the three top actions keep the compact toolbar and add minimal icons", async () => {
-  const source = await readFile(pagePath, "utf8");
+  const source = await readPageSource();
 
   assert.match(source, /data-testid="top-action-toolbar"/);
   assert.match(source, /data-action-icon="obsidian-sync"/);
@@ -74,7 +86,7 @@ test("the three top actions keep the compact toolbar and add minimal icons", asy
 });
 
 test("an authorized Obsidian folder can be explicitly replaced", async () => {
-  const source = await readFile(pagePath, "utf8");
+  const source = await readPageSource();
   const changeHandler = source.match(/const handleObsidianFolderChange = async \(\) => \{([\s\S]*?)\n  \};/)?.[1];
 
   assert.ok(changeHandler, "handleObsidianFolderChange function should exist");

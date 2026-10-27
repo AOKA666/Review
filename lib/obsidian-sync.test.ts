@@ -2,8 +2,97 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { authorizeObsidianDirectory } from "./obsidian-authorization.ts";
+import { syncReviewsToDirectory } from "./obsidian-sync.ts";
+import { reviewToMarkdown } from "./review-markdown.ts";
+import { ReviewRecord } from "./review.ts";
 
 const handle = { name: "Daily Review" } as FileSystemDirectoryHandle;
+
+const makeReview = (date: string, text: string): ReviewRecord => ({
+  id: date,
+  date,
+  created_at: "2026-08-01T00:00:00.000Z",
+  updated_at: "2026-08-01T00:00:00.000Z",
+  today_log: {
+    red: [{ id: `red-${date}`, text, order_index: 0, reflection_qas: [] }],
+    black: []
+  }
+});
+
+const createDirectory = (options: { files?: Record<string, string>; failing?: string[] } = {}) => {
+  const files = new Map(Object.entries(options.files ?? {}));
+  const failing = new Set(options.failing ?? []);
+  const writes: string[] = [];
+
+  const directory = {
+    getFileHandle: async (name: string, config?: { create?: boolean }) => {
+      if (!files.has(name) && !config?.create) {
+        const error = new Error(`${name} not found`);
+        error.name = "NotFoundError";
+        throw error;
+      }
+      return {
+        getFile: async () => ({ text: async () => files.get(name) ?? "" }),
+        createWritable: async () => {
+          let pending = "";
+          return {
+            write: async (contents: string) => { pending = contents; },
+            close: async () => {
+              if (failing.has(name)) {
+                const error = new Error(`${name} cannot be written`);
+                error.name = "NotAllowedError";
+                throw error;
+              }
+              files.set(name, pending);
+              writes.push(name);
+            }
+          };
+        }
+      };
+    }
+  };
+
+  return {
+    directory: directory as unknown as Parameters<typeof syncReviewsToDirectory>[0],
+    files,
+    writes
+  };
+};
+
+test("syncs every missing or stale date and skips files that are already up to date", async () => {
+  const dayOne = makeReview("2026-08-01", "第一天");
+  const dayTwo = makeReview("2026-08-02", "第二天");
+  const dayThree = makeReview("2026-08-03", "第三天");
+  const { directory, files, writes } = createDirectory({
+    files: {
+      "2026-08-01.md": reviewToMarkdown(dayOne),
+      "2026-08-03.md": "过期的旧内容"
+    }
+  });
+
+  const result = await syncReviewsToDirectory(directory, [dayOne, dayTwo, dayThree]);
+
+  assert.deepEqual(result.skipped, ["2026-08-01"]);
+  assert.deepEqual(result.written, ["2026-08-02", "2026-08-03"]);
+  assert.deepEqual(result.failed, []);
+  assert.deepEqual(writes, ["2026-08-02.md", "2026-08-03.md"]);
+  assert.equal(files.get("2026-08-02.md"), reviewToMarkdown(dayTwo));
+  assert.equal(files.get("2026-08-03.md"), reviewToMarkdown(dayThree));
+});
+
+test("keeps syncing the remaining dates when one file cannot be written", async () => {
+  const dayOne = makeReview("2026-08-01", "第一天");
+  const dayTwo = makeReview("2026-08-02", "第二天");
+  const dayThree = makeReview("2026-08-03", "第三天");
+  const { directory, files } = createDirectory({ failing: ["2026-08-02.md"] });
+
+  const result = await syncReviewsToDirectory(directory, [dayOne, dayTwo, dayThree]);
+
+  assert.deepEqual(result.written, ["2026-08-01", "2026-08-03"]);
+  assert.deepEqual(result.failed, ["2026-08-02"]);
+  assert.equal(files.get("2026-08-01.md"), reviewToMarkdown(dayOne));
+  assert.equal(files.get("2026-08-03.md"), reviewToMarkdown(dayThree));
+});
 
 test("does not request authorization again when the saved folder is still granted", async () => {
   let permissionRequests = 0;
