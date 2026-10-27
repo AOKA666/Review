@@ -68,38 +68,129 @@ const readExistingMarkdown = async (handle: DirectoryHandle, date: string) => {
   }
 };
 
+const writeMarkdown = async (handle: DirectoryHandle, date: string, markdown: string) => {
+  const file = await handle.getFileHandle(`${date}.md`, { create: true });
+  const writable = await file.createWritable();
+  await writable.write(markdown);
+  await writable.close();
+};
+
+// FNV-1a hash of the rendered Markdown. The length is mixed in to make
+// accidental collisions between similarly sized entries even less likely.
+export const fingerprintMarkdown = (markdown: string) => {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < markdown.length; index += 1) {
+    hash ^= markdown.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193);
+  }
+  return `${markdown.length.toString(36)}-${(hash >>> 0).toString(36)}`;
+};
+
 export type ObsidianDirectorySyncResult = {
   written: string[];
   skipped: string[];
   failed: string[];
+  fingerprints: Record<string, string>;
 };
+
+export type ObsidianDirectorySyncOptions = {
+  // Date -> fingerprint of the Markdown that was last written to this folder.
+  // Matching entries skip the file system entirely.
+  syncedFingerprints?: Readonly<Record<string, string>>;
+};
+
+// File system calls are the slow part of syncing. Running several at once
+// keeps a large vault from taking seconds per click.
+const SYNC_CONCURRENCY = 8;
 
 export const syncReviewsToDirectory = async (
   handle: DirectoryHandle,
-  reviews: ReviewRecord[]
+  reviews: ReviewRecord[],
+  options: ObsidianDirectorySyncOptions = {}
 ): Promise<ObsidianDirectorySyncResult> => {
-  const result: ObsidianDirectorySyncResult = { written: [], skipped: [], failed: [] };
+  const syncedFingerprints = options.syncedFingerprints ?? {};
+  const outcomes = new Array<"written" | "skipped" | "failed">(reviews.length);
+  const fingerprints: Record<string, string> = {};
+  let cursor = 0;
 
-  for (const review of reviews) {
+  const syncOne = async (index: number) => {
+    const review = reviews[index];
     const markdown = reviewToMarkdown(review);
+    const fingerprint = fingerprintMarkdown(markdown);
     try {
-      // Unchanged files are left untouched so Obsidian and local file watchers
-      // are only woken up for dates that actually still need syncing.
-      if ((await readExistingMarkdown(handle, review.date)) === markdown) {
-        result.skipped.push(review.date);
-        continue;
+      if (syncedFingerprints[review.date] === fingerprint) {
+        outcomes[index] = "skipped";
+        fingerprints[review.date] = fingerprint;
+        return;
       }
-      const file = await handle.getFileHandle(`${review.date}.md`, { create: true });
-      const writable = await file.createWritable();
-      await writable.write(markdown);
-      await writable.close();
-      result.written.push(review.date);
+      // Unknown or stale: compare on disk once so unchanged files are not
+      // rewritten and Obsidian watchers are not woken up needlessly.
+      if ((await readExistingMarkdown(handle, review.date)) === markdown) {
+        outcomes[index] = "skipped";
+      } else {
+        await writeMarkdown(handle, review.date, markdown);
+        outcomes[index] = "written";
+      }
+      fingerprints[review.date] = fingerprint;
     } catch {
-      result.failed.push(review.date);
+      outcomes[index] = "failed";
     }
-  }
+  };
 
-  return result;
+  const worker = async () => {
+    while (cursor < reviews.length) {
+      const index = cursor;
+      cursor += 1;
+      await syncOne(index);
+    }
+  };
+
+  await Promise.all(
+    Array.from({ length: Math.min(SYNC_CONCURRENCY, reviews.length) }, () => worker())
+  );
+
+  const datesWith = (outcome: "written" | "skipped" | "failed") =>
+    reviews.filter((_, index) => outcomes[index] === outcome).map((review) => review.date);
+
+  return {
+    written: datesWith("written"),
+    skipped: datesWith("skipped"),
+    failed: datesWith("failed"),
+    fingerprints
+  };
+};
+
+export type ObsidianSyncCache = Record<string, Record<string, string>>;
+
+const isFingerprintRecord = (value: unknown): value is Record<string, string> =>
+  typeof value === "object" && value !== null
+  && Object.values(value).every((entry) => typeof entry === "string");
+
+export const parseObsidianSyncCache = (raw: string | null): ObsidianSyncCache => {
+  if (!raw) return {};
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return {};
+    return Object.fromEntries(
+      Object.entries(parsed).filter(([, value]) => isFingerprintRecord(value))
+    );
+  } catch {
+    return {};
+  }
+};
+
+export const mergeObsidianSyncCache = (
+  cache: ObsidianSyncCache,
+  folderName: string,
+  reviews: ReviewRecord[],
+  result: ObsidianDirectorySyncResult
+): ObsidianSyncCache => {
+  const folder: Record<string, string> = {};
+  for (const review of reviews) {
+    const fingerprint = result.fingerprints[review.date];
+    if (fingerprint) folder[review.date] = fingerprint;
+  }
+  return { ...cache, [folderName]: folder };
 };
 
 export type ObsidianDirectoryHandle = DirectoryHandle;

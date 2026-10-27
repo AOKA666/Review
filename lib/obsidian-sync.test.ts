@@ -2,7 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { authorizeObsidianDirectory } from "./obsidian-authorization.ts";
-import { syncReviewsToDirectory } from "./obsidian-sync.ts";
+import {
+  fingerprintMarkdown,
+  mergeObsidianSyncCache,
+  parseObsidianSyncCache,
+  syncReviewsToDirectory
+} from "./obsidian-sync.ts";
 import { reviewToMarkdown } from "./review-markdown.ts";
 import { ReviewRecord } from "./review.ts";
 
@@ -23,9 +28,11 @@ const createDirectory = (options: { files?: Record<string, string>; failing?: st
   const files = new Map(Object.entries(options.files ?? {}));
   const failing = new Set(options.failing ?? []);
   const writes: string[] = [];
+  const accesses: string[] = [];
 
   const directory = {
     getFileHandle: async (name: string, config?: { create?: boolean }) => {
+      accesses.push(name);
       if (!files.has(name) && !config?.create) {
         const error = new Error(`${name} not found`);
         error.name = "NotFoundError";
@@ -55,7 +62,8 @@ const createDirectory = (options: { files?: Record<string, string>; failing?: st
   return {
     directory: directory as unknown as Parameters<typeof syncReviewsToDirectory>[0],
     files,
-    writes
+    writes,
+    accesses
   };
 };
 
@@ -75,7 +83,7 @@ test("syncs every missing or stale date and skips files that are already up to d
   assert.deepEqual(result.skipped, ["2026-08-01"]);
   assert.deepEqual(result.written, ["2026-08-02", "2026-08-03"]);
   assert.deepEqual(result.failed, []);
-  assert.deepEqual(writes, ["2026-08-02.md", "2026-08-03.md"]);
+  assert.deepEqual([...writes].sort(), ["2026-08-02.md", "2026-08-03.md"]);
   assert.equal(files.get("2026-08-02.md"), reviewToMarkdown(dayTwo));
   assert.equal(files.get("2026-08-03.md"), reviewToMarkdown(dayThree));
 });
@@ -92,6 +100,69 @@ test("keeps syncing the remaining dates when one file cannot be written", async 
   assert.deepEqual(result.failed, ["2026-08-02"]);
   assert.equal(files.get("2026-08-01.md"), reviewToMarkdown(dayOne));
   assert.equal(files.get("2026-08-03.md"), reviewToMarkdown(dayThree));
+});
+
+test("dates already recorded in the sync cache skip the file system entirely", async () => {
+  const dayOne = makeReview("2026-08-01", "第一天");
+  const dayTwo = makeReview("2026-08-02", "第二天");
+  const { directory, writes, accesses } = createDirectory();
+  const dayOneFingerprint = fingerprintMarkdown(reviewToMarkdown(dayOne));
+
+  const result = await syncReviewsToDirectory(directory, [dayOne, dayTwo], {
+    syncedFingerprints: { "2026-08-01": dayOneFingerprint }
+  });
+
+  assert.deepEqual(result.skipped, ["2026-08-01"]);
+  assert.deepEqual(result.written, ["2026-08-02"]);
+  assert.deepEqual(accesses.filter((name) => name === "2026-08-01.md"), []);
+  assert.ok(accesses.includes("2026-08-02.md"));
+  assert.deepEqual(writes, ["2026-08-02.md"]);
+  assert.deepEqual(result.fingerprints, {
+    "2026-08-01": dayOneFingerprint,
+    "2026-08-02": fingerprintMarkdown(reviewToMarkdown(dayTwo))
+  });
+});
+
+test("a cache entry whose content changed is rewritten", async () => {
+  const review = makeReview("2026-08-01", "新的内容");
+  const { directory, files, writes } = createDirectory();
+
+  const result = await syncReviewsToDirectory(directory, [review], {
+    syncedFingerprints: { "2026-08-01": "stale-fingerprint" }
+  });
+
+  assert.deepEqual(result.written, ["2026-08-01"]);
+  assert.deepEqual(writes, ["2026-08-01.md"]);
+  assert.equal(files.get("2026-08-01.md"), reviewToMarkdown(review));
+});
+
+test("parses a sync cache and ignores malformed entries", () => {
+  const raw = JSON.stringify({
+    "Daily Review": { "2026-08-01": "abc" },
+    broken: 42
+  });
+
+  assert.deepEqual(parseObsidianSyncCache(raw), { "Daily Review": { "2026-08-01": "abc" } });
+  assert.deepEqual(parseObsidianSyncCache("not json"), {});
+  assert.deepEqual(parseObsidianSyncCache(null), {});
+});
+
+test("merging the sync cache only keeps fingerprints for dates that synced successfully", () => {
+  const dayOne = makeReview("2026-08-01", "第一天");
+  const dayTwo = makeReview("2026-08-02", "第二天");
+  const cache = { Other: { "2026-07-01": "other" } };
+
+  const merged = mergeObsidianSyncCache(cache, "Daily Review", [dayOne, dayTwo], {
+    written: ["2026-08-01"],
+    skipped: [],
+    failed: ["2026-08-02"],
+    fingerprints: { "2026-08-01": "fp-1" }
+  });
+
+  assert.deepEqual(merged, {
+    Other: { "2026-07-01": "other" },
+    "Daily Review": { "2026-08-01": "fp-1" }
+  });
 });
 
 test("does not request authorization again when the saved folder is still granted", async () => {

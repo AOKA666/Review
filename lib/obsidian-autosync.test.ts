@@ -50,9 +50,20 @@ test("manual sync covers every pending date instead of only the selected day", a
 
   assert.ok(syncHandler, "syncPendingReviewsToObsidian function should exist");
   assert.doesNotMatch(syncHandler, /currentIdRef\.current/);
-  assert.match(syncHandler, /syncReviewsToDirectory\(handle, payload\)/);
+  assert.match(syncHandler, /syncReviewsToDirectory\(handle, payload, \{/);
+  assert.match(syncHandler, /syncedFingerprints/);
+  assert.match(syncHandler, /writeObsidianSyncCache\(/);
   assert.match(syncHandler, /failed\.length/);
   assert.match(source, /const handleObsidianFolderChange[\s\S]*?await syncPendingReviewsToObsidian\(latestReviews\.current\)/);
+});
+
+test("changing the Obsidian folder invalidates its cached fingerprints", async () => {
+  const source = await readPageSource();
+  const changeHandler = source.match(/const handleObsidianFolderChange = async \(\) => \{([\s\S]*?)\n  \};/)?.[1];
+
+  assert.ok(changeHandler, "handleObsidianFolderChange function should exist");
+  assert.match(changeHandler, /delete cache\[handle\.name\]/);
+  assert.match(changeHandler, /writeObsidianSyncCache\(cache\)/);
 });
 
 test("editing after a successful Obsidian sync marks the current review as pending sync", async () => {

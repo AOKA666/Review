@@ -8,8 +8,11 @@ import { authorizeObsidianDirectory } from "../lib/obsidian-authorization";
 import {
   hasWritePermission,
   loadDirectoryHandle,
+  mergeObsidianSyncCache,
   ObsidianDirectoryHandle,
+  ObsidianSyncCache,
   ObsidianSyncStatus,
+  parseObsidianSyncCache,
   pickDirectory,
   requestWritePermission,
   saveDirectoryHandle,
@@ -32,6 +35,25 @@ type Lang = "zh" | "en";
 const STORAGE_KEY = "repano_reviews";
 const LANG_KEY = "repano_lang";
 const WEEKLY_SUMMARY_KEY = "repano_weekly_summaries";
+const OBSIDIAN_SYNC_CACHE_KEY = "repano_obsidian_sync_cache";
+
+const readObsidianSyncCache = (): ObsidianSyncCache => {
+  if (typeof window === "undefined") return {};
+  try {
+    return parseObsidianSyncCache(window.localStorage.getItem(OBSIDIAN_SYNC_CACHE_KEY));
+  } catch {
+    return {};
+  }
+};
+
+const writeObsidianSyncCache = (cache: ObsidianSyncCache) => {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(OBSIDIAN_SYNC_CACHE_KEY, JSON.stringify(cache));
+  } catch {
+    // The cache only speeds up syncing; ignore quota or privacy-mode failures.
+  }
+};
 
 const i18n = {
   zh: {
@@ -458,8 +480,12 @@ export default function HomePage() {
         return;
       }
       setObsidianStatus("syncing");
-      const { failed } = await syncReviewsToDirectory(handle, payload);
-      if (failed.length) {
+      const cache = readObsidianSyncCache();
+      const result = await syncReviewsToDirectory(handle, payload, {
+        syncedFingerprints: cache[handle.name] ?? {}
+      });
+      writeObsidianSyncCache(mergeObsidianSyncCache(cache, handle.name, payload, result));
+      if (result.failed.length) {
         setObsidianStatus("error");
         return;
       }
@@ -507,6 +533,13 @@ export default function HomePage() {
       }
       obsidianDirectoryRef.current = handle;
       setObsidianStatus("connected");
+      // A freshly picked folder must be mirrored in full, even if an earlier
+      // folder with the same name had cached fingerprints.
+      const cache = readObsidianSyncCache();
+      if (cache[handle.name]) {
+        delete cache[handle.name];
+        writeObsidianSyncCache(cache);
+      }
       await syncPendingReviewsToObsidian(latestReviews.current);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
