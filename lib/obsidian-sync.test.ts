@@ -102,10 +102,14 @@ test("keeps syncing the remaining dates when one file cannot be written", async 
   assert.equal(files.get("2026-08-03.md"), reviewToMarkdown(dayThree));
 });
 
-test("dates already recorded in the sync cache skip the file system entirely", async () => {
+test("dates already recorded in the sync cache skip content reads and writes when the file still exists", async () => {
   const dayOne = makeReview("2026-08-01", "第一天");
   const dayTwo = makeReview("2026-08-02", "第二天");
-  const { directory, writes, accesses } = createDirectory();
+  const { directory, writes, accesses } = createDirectory({
+    files: {
+      "2026-08-01.md": reviewToMarkdown(dayOne)
+    }
+  });
   const dayOneFingerprint = fingerprintMarkdown(reviewToMarkdown(dayOne));
 
   const result = await syncReviewsToDirectory(directory, [dayOne, dayTwo], {
@@ -114,13 +118,32 @@ test("dates already recorded in the sync cache skip the file system entirely", a
 
   assert.deepEqual(result.skipped, ["2026-08-01"]);
   assert.deepEqual(result.written, ["2026-08-02"]);
-  assert.deepEqual(accesses.filter((name) => name === "2026-08-01.md"), []);
+  // Existence is confirmed once; content is not read again for a cache hit.
+  assert.deepEqual(accesses.filter((name) => name === "2026-08-01.md"), ["2026-08-01.md"]);
   assert.ok(accesses.includes("2026-08-02.md"));
   assert.deepEqual(writes, ["2026-08-02.md"]);
   assert.deepEqual(result.fingerprints, {
     "2026-08-01": dayOneFingerprint,
     "2026-08-02": fingerprintMarkdown(reviewToMarkdown(dayTwo))
   });
+});
+
+test("a cache hit whose vault file is missing is rewritten instead of reporting a false skip", async () => {
+  const dayOne = makeReview("2026-08-01", "第一天");
+  const { directory, files, writes, accesses } = createDirectory();
+  const dayOneFingerprint = fingerprintMarkdown(reviewToMarkdown(dayOne));
+
+  const result = await syncReviewsToDirectory(directory, [dayOne], {
+    syncedFingerprints: { "2026-08-01": dayOneFingerprint }
+  });
+
+  assert.deepEqual(result.skipped, []);
+  assert.deepEqual(result.written, ["2026-08-01"]);
+  assert.deepEqual(result.failed, []);
+  assert.ok(accesses.includes("2026-08-01.md"));
+  assert.deepEqual(writes, ["2026-08-01.md"]);
+  assert.equal(files.get("2026-08-01.md"), reviewToMarkdown(dayOne));
+  assert.equal(result.fingerprints["2026-08-01"], dayOneFingerprint);
 });
 
 test("a cache entry whose content changed is rewritten", async () => {

@@ -44,6 +44,17 @@ test("Obsidian sync remains available as an explicit user action", async () => {
   assert.doesNotMatch(connectHandler, /console\.(?:error|warn)/);
 });
 
+test("first-time Obsidian connect clears stale fingerprints before syncing a newly picked folder", async () => {
+  const source = await readPageSource();
+  const connectHandler = source.match(/const handleObsidianConnect = async \(\) => \{([\s\S]*?)\n  \};/)?.[1];
+
+  assert.ok(connectHandler, "handleObsidianConnect function should exist");
+  assert.match(connectHandler, /const hadSavedHandle = Boolean\(obsidianDirectoryRef\.current\)/);
+  assert.match(connectHandler, /if \(!hadSavedHandle\)/);
+  assert.match(connectHandler, /delete cache\[handle\.name\]/);
+  assert.match(connectHandler, /writeObsidianSyncCache\(cache\)/);
+});
+
 test("manual sync covers every pending date instead of only the selected day", async () => {
   const source = await readPageSource();
   const syncHandler = source.match(/const syncPendingReviewsToObsidian = async \(payload: ReviewRecord\[\]\) => \{([\s\S]*?)\n  \};\n\n  const handleObsidianConnect/)?.[1];

@@ -29,10 +29,9 @@ type StoredWeeklySummary = {
 
 type WeeklySummaryStore = Record<string, StoredWeeklySummary>;
 
-type MiniMaxChatResult = {
+type DeepSeekChatResult = {
   choices?: Array<{ message?: { content?: string } }>;
   error?: { message?: string };
-  base_resp?: { status_msg?: string };
 };
 
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
@@ -50,7 +49,7 @@ const readSummaryStore = async (supabase: SupabaseClient): Promise<WeeklySummary
   return data.payload as WeeklySummaryStore;
 };
 
-const extractOutputText = (result: MiniMaxChatResult) => {
+const extractOutputText = (result: DeepSeekChatResult) => {
   const content = result.choices?.[0]?.message?.content;
   if (typeof content !== "string") return "";
   return content.replace(/<think>[\s\S]*?<\/think>/g, "").trim();
@@ -114,9 +113,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ summary: saved.summary, fingerprint: saved.fingerprint, saved: true });
   }
 
-  const apiKey = process.env.MINIMAX_API_KEY;
+  const apiKey = process.env.DEEPSEEK_API_KEY;
   if (!apiKey) {
-    return NextResponse.json({ error: "服务端未配置 MINIMAX_API_KEY" }, { status: 503 });
+    return NextResponse.json({ error: "服务端未配置 DEEPSEEK_API_KEY" }, { status: 503 });
   }
 
   const trimmedRecords = payload.records.map((record) => ({
@@ -125,7 +124,7 @@ export async function POST(request: Request) {
     black: record.black.map((item) => item.trim().slice(0, 2000)).filter(Boolean).slice(0, 100)
   }));
 
-  const baseUrl = (process.env.MINIMAX_BASE_URL || "https://api.minimaxi.com/v1").replace(/\/$/, "");
+  const baseUrl = (process.env.DEEPSEEK_BASE_URL || "https://api.deepseek.com").replace(/\/$/, "");
   const systemPrompt =
     payload.language === "zh"
       ? "你是一位务实、克制的周复盘教练。只能依据用户提供的记录总结，不虚构事实。用中文输出，结构固定为：本周红榜、本周黑榜、关键规律、下周行动。合并重复内容，指出红黑榜之间可能的关联；下周行动给出 3 条具体、可执行、可检查的建议。使用简洁的 Markdown 小标题和项目符号。"
@@ -135,7 +134,7 @@ export async function POST(request: Request) {
     method: "POST",
     headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
     body: JSON.stringify({
-      model: process.env.MINIMAX_MODEL || "MiniMax-M3",
+      model: process.env.DEEPSEEK_MODEL || "deepseek-chat",
       messages: [
         { role: "system", content: systemPrompt },
         {
@@ -143,18 +142,17 @@ export async function POST(request: Request) {
           content: `Week: ${payload.weekStart} to ${payload.weekEnd}\n\nDaily records:\n${JSON.stringify(trimmedRecords, null, 2)}`
         }
       ],
-      thinking: { type: "disabled" },
       temperature: 0.7,
-      max_completion_tokens: 1200
+      max_tokens: 1200
     })
   });
 
-  const result = (await response.json()) as MiniMaxChatResult;
+  const result = (await response.json()) as DeepSeekChatResult;
   if (!response.ok) {
-    const errorMessage = result.error?.message || result.base_resp?.status_msg;
-    console.error("MiniMax weekly summary failed", response.status, errorMessage);
+    const errorMessage = result.error?.message;
+    console.error("DeepSeek weekly summary failed", response.status, errorMessage);
     return NextResponse.json(
-      { error: errorMessage || "MiniMax 服务暂时不可用" },
+      { error: errorMessage || "DeepSeek 服务暂时不可用" },
       { status: response.status >= 400 && response.status < 500 ? 502 : response.status }
     );
   }

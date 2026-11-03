@@ -499,6 +499,7 @@ export default function HomePage() {
   const handleObsidianConnect = async () => {
     if (!supportsObsidianSync()) { setObsidianStatus("unsupported"); return; }
     try {
+      const hadSavedHandle = Boolean(obsidianDirectoryRef.current);
       const handle = await authorizeObsidianDirectory(obsidianDirectoryRef.current, {
         pick: pickDirectory,
         hasPermission: hasWritePermission,
@@ -511,6 +512,15 @@ export default function HomePage() {
       }
       obsidianDirectoryRef.current = handle;
       setObsidianStatus("connected");
+      // First-time connect opens the picker; clear any stale fingerprints keyed by
+      // folder name so a newly chosen empty folder is fully mirrored.
+      if (!hadSavedHandle) {
+        const cache = readObsidianSyncCache();
+        if (cache[handle.name]) {
+          delete cache[handle.name];
+          writeObsidianSyncCache(cache);
+        }
+      }
       await syncPendingReviewsToObsidian(latestReviews.current);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;

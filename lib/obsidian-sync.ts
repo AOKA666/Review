@@ -58,6 +58,16 @@ const isNotFoundError = (error: unknown) =>
   typeof error === "object" && error !== null && "name" in error
   && (error as { name?: string }).name === "NotFoundError";
 
+const markdownFileExists = async (handle: DirectoryHandle, date: string) => {
+  try {
+    await handle.getFileHandle(`${date}.md`);
+    return true;
+  } catch (error) {
+    if (isNotFoundError(error)) return false;
+    throw error;
+  }
+};
+
 const readExistingMarkdown = async (handle: DirectoryHandle, date: string) => {
   try {
     const file = await handle.getFileHandle(`${date}.md`);
@@ -95,7 +105,7 @@ export type ObsidianDirectorySyncResult = {
 
 export type ObsidianDirectorySyncOptions = {
   // Date -> fingerprint of the Markdown that was last written to this folder.
-  // Matching entries skip the file system entirely.
+  // Matching entries still confirm the file exists, then skip reading/writing content.
   syncedFingerprints?: Readonly<Record<string, string>>;
 };
 
@@ -119,11 +129,16 @@ export const syncReviewsToDirectory = async (
     const fingerprint = fingerprintMarkdown(markdown);
     try {
       if (syncedFingerprints[review.date] === fingerprint) {
-        outcomes[index] = "skipped";
-        fingerprints[review.date] = fingerprint;
-        return;
+        // Cache can outlive the vault files (manual delete, renamed folder with
+        // the same name, or a reconnect that reused stale localStorage entries).
+        // Only skip content I/O when the file is still present.
+        if (await markdownFileExists(handle, review.date)) {
+          outcomes[index] = "skipped";
+          fingerprints[review.date] = fingerprint;
+          return;
+        }
       }
-      // Unknown or stale: compare on disk once so unchanged files are not
+      // Unknown, stale, or missing: compare on disk once so unchanged files are not
       // rewritten and Obsidian watchers are not woken up needlessly.
       if ((await readExistingMarkdown(handle, review.date)) === markdown) {
         outcomes[index] = "skipped";
