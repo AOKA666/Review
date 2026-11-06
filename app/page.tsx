@@ -19,8 +19,17 @@ import {
   supportsObsidianSync,
   syncReviewsToDirectory
 } from "../lib/obsidian-sync";
-import { mergeReviewsByDate } from "../lib/review-merge";
-import { persistWithLocalFallback } from "../lib/save-status";
+import { cloudSyncHints, cloudSyncStatusLabels, type CloudSyncStatus } from "../lib/cloud-sync-status";
+import { fetchRemoteReviews, postReviewSave } from "../lib/save-response";
+import {
+  ReviewSyncController,
+  buildSaveRequest,
+  emptySyncState,
+  ensureToday,
+  hasUnsynced,
+  parseSyncState,
+  serializeSyncState
+} from "../lib/review-sync";
 import { parseWeeklySummary } from "../lib/weekly-summary";
 import {
   shouldGenerateWeeklySummary,
@@ -28,7 +37,7 @@ import {
   weeklySummaryKey
 } from "../lib/weekly-summary-cache";
 
-type SaveStatus = "ready" | "saving" | "saved" | "error";
+type SaveStatus = CloudSyncStatus;
 type LogColumn = "red" | "black";
 type Lang = "zh" | "en";
 
@@ -59,7 +68,7 @@ const i18n = {
   zh: {
     topTag: "今日记录",
     title: "复盘日志",
-    status: { ready: "就绪", saving: "保存中...", saved: "已保存", error: "保存失败（点击重试）" },
+    status: cloudSyncStatusLabels.zh,
     langZh: "中文",
     langEn: "EN",
     newToday: "新建记录",
@@ -72,7 +81,7 @@ const i18n = {
     collapse: "折叠",
     updatedAt: "更新于",
     emptyRecord: "暂无记录",
-    autosaveHint: "自动保存，停止输入 1 秒后同步",
+    autosaveHint: cloudSyncHints.zh,
     deleteDay: "删除这一天",
     expandHistory: "展开历史",
     collapseHistory: "折叠历史",
@@ -101,7 +110,7 @@ const i18n = {
   en: {
     topTag: "Today Log",
     title: "Review Log",
-    status: { ready: "Ready", saving: "Saving...", saved: "Saved", error: "Save failed (click to retry)" },
+    status: cloudSyncStatusLabels.en,
     langZh: "中文",
     langEn: "EN",
     newToday: "New entry",
@@ -114,7 +123,7 @@ const i18n = {
     collapse: "Collapse",
     updatedAt: "Updated",
     emptyRecord: "No records yet",
-    autosaveHint: "Auto-saves 1 second after you stop typing",
+    autosaveHint: cloudSyncHints.en,
     deleteDay: "Delete this day",
     expandHistory: "Expand history",
     collapseHistory: "Collapse history",
@@ -294,6 +303,7 @@ export default function HomePage() {
 
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const latestReviews = useRef<ReviewRecord[]>([]);
+  const controllerRef = useRef<ReviewSyncController | null>(null);
   const currentIdRef = useRef<string | null>(null);
   type PendingFocusTarget =
     | { type: "item"; column: LogColumn; itemId: string }
@@ -429,47 +439,70 @@ export default function HomePage() {
     return new Intl.DateTimeFormat("en-US", { year: "numeric", month: "long" }).format(date);
   };
 
-  const setReviewsDirect = (next: ReviewRecord[]) => {
-    const sorted = sortReviews(next.map(normalizeReview));
-    latestReviews.current = sorted;
-    setReviews(sorted);
+  const persistController = () => {
+    const controller = controllerRef.current;
+    if (!controller || typeof window === "undefined") return false;
+    try {
+      window.localStorage.setItem(STORAGE_KEY, serializeSyncState(controller.state));
+      return true;
+    } catch (error) {
+      console.error("Local save failed", error);
+      return false;
+    }
+  };
+
+  const ensureController = () => {
+    if (!controllerRef.current) {
+      const initial = typeof window === "undefined"
+        ? emptySyncState()
+        : parseSyncState(window.localStorage.getItem(STORAGE_KEY));
+      controllerRef.current = new ReviewSyncController(
+        postReviewSave,
+        persistController,
+        initial,
+        (error) => console.warn("Supabase save failed; local cache retained", error)
+      );
+    }
+    return controllerRef.current;
+  };
+
+  const publishReviews = (selectToday = false) => {
+    const controller = ensureController();
+    const normalized = sortReviews(controller.state.reviews.map(normalizeReview));
+    controller.replaceReviews(normalized);
+    latestReviews.current = normalized;
+    setReviews(normalized);
+    setStatus(controller.status());
+    if (!selectToday) return;
+    const todayReview = normalized.find((review) => review.date === todayKey());
+    const nextId = todayReview?.id ?? normalized[0]?.id ?? null;
+    currentIdRef.current = nextId;
+    setCurrentId(nextId);
+    setCurrentWeeklyEnd(null);
   };
 
   const updateReviews = (updater: (prev: ReviewRecord[]) => ReviewRecord[]) => {
     setObsidianStatus((previous) => previous === "synced" ? "connected" : previous);
     setObsidianNotice(null);
-    setReviews((prev) => {
-      const now = new Date().toISOString();
-      const updated = updater(prev).map((review) =>
-        review.id === currentIdRef.current ? { ...review, updated_at: now } : review
-      );
-      const sorted = sortReviews(updated.map(normalizeReview));
-      latestReviews.current = sorted;
-      persistLocally(sorted);
-      return sorted;
-    });
+    const controller = ensureController();
+    const now = new Date().toISOString();
+    const updated = updater(latestReviews.current).map((review) =>
+      review.id === currentIdRef.current ? { ...review, updated_at: now } : review
+    );
+    const sorted = sortReviews(updated.map(normalizeReview));
+    const editedDate = sorted.find((review) => review.id === currentIdRef.current)?.date ?? null;
+    if (editedDate) controller.edit(sorted, editedDate);
+    else controller.replaceReviews(sorted);
+    latestReviews.current = sorted;
+    const savedLocally = persistLocally(sorted);
+    setReviews(sorted);
+    setStatus(savedLocally ? controller.status() : "error");
   };
 
   const persistLocally = (list: ReviewRecord[]) => {
-    if (typeof window === "undefined") return false;
-    try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(sortReviews(list)));
-      return true;
-    } catch (error) {
-      console.error("Local save failed", error);
-      setStatus("error");
-      return false;
-    }
-  };
-
-  const saveToSupabase = async (payload: ReviewRecord[]) => {
-    const response = await fetch("/api/reviews", {
-      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reviews: payload })
-    });
-    if (!response.ok) {
-      const failure = await response.text();
-      throw new Error(failure || "Supabase write failed");
-    }
+    const controller = ensureController();
+    controller.replaceReviews(list);
+    return persistController();
   };
   const syncPendingReviewsToObsidian = async (payload: ReviewRecord[]) => {
     const handle = obsidianDirectoryRef.current;
@@ -559,71 +592,40 @@ export default function HomePage() {
 
   const persistNow = async () => {
     if (typeof window === "undefined") return;
-    if (!latestReviews.current.length) return;
-
-    const now = new Date().toISOString();
-    const updated = latestReviews.current.map((review) =>
-      review.id === currentIdRef.current ? { ...review, updated_at: now } : review
-    );
-    const payload = sortReviews(updated);
-
-    setReviewsDirect(payload);
-    const nextStatus = await persistWithLocalFallback({
-      saveLocal: () => persistLocally(payload),
-      saveRemote: () => saveToSupabase(payload),
-      reportRemoteError: (error) => console.warn("Supabase save failed; local cache retained", error)
-    });
-    setStatus(nextStatus);
+    const controller = ensureController();
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current);
+      saveTimer.current = null;
+    }
+    if (!hasUnsynced(controller.state)) {
+      setStatus(controller.status());
+      return;
+    }
+    setStatus("syncing");
+    await controller.flush();
+    publishReviews(false);
   };
 
   const scheduleSave = () => {
-    setStatus("saving");
+    setStatus(ensureController().status());
     if (saveTimer.current) clearTimeout(saveTimer.current);
     saveTimer.current = setTimeout(() => { void persistNow(); }, 1000);
   };
 
-  const loadLocalReviews = (): ReviewRecord[] => {
-    if (typeof window === "undefined") return [];
-    const raw = window.localStorage.getItem(STORAGE_KEY);
-    if (!raw) return [];
-    try {
-      const parsed = JSON.parse(raw) as unknown[];
-      return Array.isArray(parsed) ? parsed.map(normalizeReview) : [];
-    } catch (error) {
-      console.error("Local load failed", error);
-      return [];
-    }
-  };
-
-  const hydrateReviewList = (source: ReviewRecord[]) => {
-    const normalized = sortReviews(source.map(normalizeReview));
-    const today = todayKey();
-    const todayReview = normalized.find((item) => item.date === today);
-
-    if (todayReview) {
-      setReviewsDirect(normalized);
-      setCurrentId(todayReview.id);
-      setCurrentWeeklyEnd(null);
-      persistLocally(normalized);
-      return;
-    }
-
-    const next = sortReviews([buildReview(today), ...normalized]);
-    setReviewsDirect(next);
-    setCurrentId(next[0]?.id ?? null);
-    setCurrentWeeklyEnd(null);
-    persistLocally(next);
-  };
-
   const handleNewReview = (date: string) => {
-    const existed = reviews.find((item) => item.date === date);
+    const controller = ensureController();
+    const existed = controller.state.reviews.find((item) => item.date === date);
     if (existed) { selectDailyReview(existed.id); return; }
 
-    const next = sortReviews([buildReview(date), ...reviews]);
-    setReviewsDirect(next);
-    setCurrentId(next[0]?.id ?? null);
+    const created = buildReview(date);
+    const next = sortReviews([created, ...controller.state.reviews]);
+    currentIdRef.current = created.id;
+    controller.edit(next, date);
+    latestReviews.current = sortReviews(next.map(normalizeReview));
+    setReviews(latestReviews.current);
+    setCurrentId(created.id);
     setCurrentWeeklyEnd(null);
-    setStatus("saved");
+    setStatus(controller.status());
     void persistNow();
   };
 
@@ -638,20 +640,32 @@ export default function HomePage() {
     if (!currentReview) return;
     if (typeof window !== "undefined" && !window.confirm(t.confirmDeleteDay(currentReview.date))) return;
 
-    const remaining = reviews.filter((item) => item.id !== currentReview.id);
-    const nextList = remaining.length ? remaining : [buildReview(todayKey())];
-    const nextCurrentId = nextList[0]?.id ?? null;
-
-    setReviewsDirect(nextList);
-    setCurrentId(nextCurrentId);
-    currentIdRef.current = nextCurrentId;
-    persistLocally(nextList);
-
-    setStatus("saving");
-    void (async () => {
-      try { await saveToSupabase(sortReviews(nextList)); setStatus("saved"); }
-      catch (error) { console.error("Supabase delete sync failed", error); setStatus("error"); }
-    })();
+    const controller = ensureController();
+    const deletedDate = currentReview.date;
+    controller.deleteDate(deletedDate);
+    if (controller.state.reviews.length === 0) {
+      const created = buildReview(todayKey());
+      if (created.date === deletedDate) {
+        controller.replaceState({
+          ...controller.state,
+          deletedDates: controller.state.deletedDates.filter((item) => item !== deletedDate),
+          reviews: [created]
+        });
+        controller.edit([created], created.date);
+      } else {
+        controller.replaceState(ensureToday(controller.state, created.date, () => created));
+      }
+    }
+    const normalized = sortReviews(controller.state.reviews.map(normalizeReview));
+    controller.replaceReviews(normalized);
+    const nextId = normalized.find((review) => review.date === todayKey())?.id ?? normalized[0]?.id ?? null;
+    currentIdRef.current = nextId;
+    latestReviews.current = normalized;
+    setReviews(normalized);
+    setCurrentId(nextId);
+    setCurrentWeeklyEnd(null);
+    setStatus(controller.status());
+    void persistNow();
   };
 
   const handleExportMarkdown = () => {
@@ -863,28 +877,62 @@ export default function HomePage() {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-
-    const stored = loadLocalReviews();
-    hydrateReviewList(stored);
-    setStatus("saved");
+    const controller = ensureController();
+    if (!controller.mutated) {
+      controller.replaceState(ensureToday(controller.state, todayKey(), () => buildReview(todayKey())));
+    }
+    publishReviews(true);
 
     const syncRemote = async () => {
       try {
-        const response = await fetch("/api/reviews");
-        if (!response.ok) throw new Error("Supabase read failed");
-        const data = (await response.json()) as { reviews: ReviewRecord[] };
-        if (Array.isArray(data?.reviews)) {
-          const remote = data.reviews.map(normalizeReview);
-          const local = latestReviews.current;
-          hydrateReviewList(mergeReviewsByDate(local, remote));
-          setStatus("saved");
-        }
+        const remote = await fetchRemoteReviews();
+        controller.mergeRemote(remote.map(normalizeReview));
+        publishReviews(false);
+        setCurrentId((current) => {
+          const reviewsNow = latestReviews.current;
+          if (current && reviewsNow.some((review) => review.id === current)) return current;
+          const todayReview = reviewsNow.find((review) => review.date === todayKey());
+          const nextId = todayReview?.id ?? reviewsNow[0]?.id ?? null;
+          currentIdRef.current = nextId;
+          return nextId;
+        });
+        if (hasUnsynced(controller.state)) await persistNow();
       } catch (error) {
         console.error("Supabase read failed", error);
+        controller.markReadFailure();
+        publishReviews(false);
       }
     };
 
     void syncRemote();
+  }, []);
+
+  useEffect(() => {
+    const onBeforeUnload = (event: BeforeUnloadEvent) => {
+      const controller = controllerRef.current;
+      if (!controller) return;
+      persistController();
+      if (!hasUnsynced(controller.state)) return;
+      try {
+        const request = buildSaveRequest(controller.state);
+        void fetch("/api/reviews", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            reviews: request.reviews,
+            deletedDates: request.deletedDates,
+            baseUpdatedAt: request.baseUpdatedAt
+          }),
+          keepalive: true
+        });
+      } catch {
+        // The page is going away, so this request can never be confirmed.
+      }
+      event.preventDefault();
+      event.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, []);
 
   useEffect(() => {
@@ -939,8 +987,9 @@ export default function HomePage() {
   }, [reviews]);
 
   const badgeClass =
-    status === "saving" ? "bg-amber-100 text-amber-700" :
-    status === "saved" ? "bg-emerald-100 text-emerald-900" :
+    status === "syncing" ? "bg-amber-100 text-amber-800" :
+    status === "pending" ? "bg-sky-100 text-sky-800 hover:bg-sky-200 cursor-pointer" :
+    status === "synced" ? "bg-emerald-100 text-emerald-900" :
     status === "error" ? "bg-rose-100 text-rose-700 hover:bg-rose-200 cursor-pointer" :
     "bg-slate-100 text-slate-600";
 
@@ -1203,8 +1252,9 @@ export default function HomePage() {
                   </button>
                 </div>
                 <span
+                  data-testid="cloud-sync-status"
                   className={`rounded-full px-3 py-0.5 text-xs font-semibold ${badgeClass}`}
-                  onClick={status === "error" ? () => void persistNow() : undefined}
+                  onClick={status === "error" || status === "pending" ? () => void persistNow() : undefined}
                 >
                   {t.status[status]}
                 </span>

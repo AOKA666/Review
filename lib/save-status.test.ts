@@ -25,3 +25,21 @@ test("reports an error when local persistence fails even if cloud sync also fail
 
   assert.equal(status, "error");
 });
+
+test("confirms a cloud sync only when the latest server ack is accepted", async () => {
+  const synced = await persistWithLocalFallback({
+    saveLocal: () => true,
+    saveRemote: async () => undefined,
+    reportRemoteError: () => undefined
+  });
+  const stale = await persistWithLocalFallback({
+    saveLocal: () => true,
+    saveRemote: async () => undefined,
+    reportRemoteError: () => undefined,
+    acceptRemote: () => false
+  });
+
+  assert.equal(synced, "synced");
+  assert.equal(stale, "pending");
+  assert.notEqual(stale, "synced");
+});
