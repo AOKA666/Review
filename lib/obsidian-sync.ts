@@ -54,23 +54,31 @@ export const hasWritePermission = async (handle: DirectoryHandle) =>
 export const requestWritePermission = async (handle: DirectoryHandle) =>
   (await handle.requestPermission({ mode: "readwrite" })) === "granted";
 
-const isNotFoundError = (error: unknown) =>
+const errorName = (error: unknown) =>
   typeof error === "object" && error !== null && "name" in error
-  && (error as { name?: string }).name === "NotFoundError";
+    ? String((error as { name?: string }).name ?? "")
+    : "";
 
-const markdownFileExists = async (handle: DirectoryHandle, date: string) => {
-  try {
-    await handle.getFileHandle(`${date}.md`);
-    return true;
-  } catch (error) {
-    if (isNotFoundError(error)) return false;
-    throw error;
-  }
+const isNotFoundError = (error: unknown) => errorName(error) === "NotFoundError";
+
+const isPermissionError = (error: unknown) => {
+  const name = errorName(error);
+  return name === "NotAllowedError" || name === "SecurityError" || name === "NotReadableError";
 };
+
+// Windows rejects ":" in file names. A timestamptz that leaked into `date`
+// would make every createWritable fail, so the vault file stays on the calendar day.
+export const obsidianFileName = (date: string) => {
+  const match = /^(\d{4}-\d{2}-\d{2})/.exec(date);
+  return `${match?.[1] ?? date}.md`;
+};
+
+const sameMarkdown = (left: string | null, right: string) =>
+  left != null && left.replace(/\r\n/g, "\n") === right.replace(/\r\n/g, "\n");
 
 const readExistingMarkdown = async (handle: DirectoryHandle, date: string) => {
   try {
-    const file = await handle.getFileHandle(`${date}.md`);
+    const file = await handle.getFileHandle(obsidianFileName(date));
     return await (await file.getFile()).text();
   } catch (error) {
     if (isNotFoundError(error)) return null;
@@ -79,7 +87,7 @@ const readExistingMarkdown = async (handle: DirectoryHandle, date: string) => {
 };
 
 const writeMarkdown = async (handle: DirectoryHandle, date: string, markdown: string) => {
-  const file = await handle.getFileHandle(`${date}.md`, { create: true });
+  const file = await handle.getFileHandle(obsidianFileName(date), { create: true });
   const writable = await file.createWritable();
   await writable.write(markdown);
   await writable.close();
@@ -101,68 +109,51 @@ export type ObsidianDirectorySyncResult = {
   skipped: string[];
   failed: string[];
   fingerprints: Record<string, string>;
+  permissionDenied: boolean;
 };
 
 export type ObsidianDirectorySyncOptions = {
-  // Date -> fingerprint of the Markdown that was last written to this folder.
-  // Matching entries still confirm the file exists, then skip reading/writing content.
+  // Retained for callers that still record the last written hash. A matching
+  // hash is not enough to skip: the vault file can exist while its bytes are older.
   syncedFingerprints?: Readonly<Record<string, string>>;
 };
-
-// File system calls are the slow part of syncing. Running several at once
-// keeps a large vault from taking seconds per click.
-const SYNC_CONCURRENCY = 8;
 
 export const syncReviewsToDirectory = async (
   handle: DirectoryHandle,
   reviews: ReviewRecord[],
   options: ObsidianDirectorySyncOptions = {}
 ): Promise<ObsidianDirectorySyncResult> => {
-  const syncedFingerprints = options.syncedFingerprints ?? {};
+  // The hash is recorded after a confirmed write. It must not decide the skip.
+  void options.syncedFingerprints;
   const outcomes = new Array<"written" | "skipped" | "failed">(reviews.length);
   const fingerprints: Record<string, string> = {};
-  let cursor = 0;
+  let permissionDenied = false;
 
-  const syncOne = async (index: number) => {
+  for (let index = 0; index < reviews.length; index += 1) {
     const review = reviews[index];
-    const markdown = reviewToMarkdown(review);
-    const fingerprint = fingerprintMarkdown(markdown);
+    let markdown = "";
     try {
-      if (syncedFingerprints[review.date] === fingerprint) {
-        // Cache can outlive the vault files (manual delete, renamed folder with
-        // the same name, or a reconnect that reused stale localStorage entries).
-        // Only skip content I/O when the file is still present.
-        if (await markdownFileExists(handle, review.date)) {
-          outcomes[index] = "skipped";
-          fingerprints[review.date] = fingerprint;
-          return;
-        }
-      }
-      // Unknown, stale, or missing: compare on disk once so unchanged files are not
-      // rewritten and Obsidian watchers are not woken up needlessly.
-      if ((await readExistingMarkdown(handle, review.date)) === markdown) {
+      markdown = reviewToMarkdown(review);
+      const fingerprint = fingerprintMarkdown(markdown);
+      const existing = await readExistingMarkdown(handle, review.date);
+      if (sameMarkdown(existing, markdown)) {
         outcomes[index] = "skipped";
-      } else {
-        await writeMarkdown(handle, review.date, markdown);
-        outcomes[index] = "written";
+        fingerprints[review.date] = fingerprint;
+        continue;
       }
+      await writeMarkdown(handle, review.date, markdown);
+      const confirmed = await readExistingMarkdown(handle, review.date);
+      if (!sameMarkdown(confirmed, markdown)) {
+        outcomes[index] = "failed";
+        continue;
+      }
+      outcomes[index] = "written";
       fingerprints[review.date] = fingerprint;
-    } catch {
+    } catch (error) {
       outcomes[index] = "failed";
+      if (isPermissionError(error)) permissionDenied = true;
     }
-  };
-
-  const worker = async () => {
-    while (cursor < reviews.length) {
-      const index = cursor;
-      cursor += 1;
-      await syncOne(index);
-    }
-  };
-
-  await Promise.all(
-    Array.from({ length: Math.min(SYNC_CONCURRENCY, reviews.length) }, () => worker())
-  );
+  }
 
   const datesWith = (outcome: "written" | "skipped" | "failed") =>
     reviews.filter((_, index) => outcomes[index] === outcome).map((review) => review.date);
@@ -171,7 +162,8 @@ export const syncReviewsToDirectory = async (
     written: datesWith("written"),
     skipped: datesWith("skipped"),
     failed: datesWith("failed"),
-    fingerprints
+    fingerprints,
+    permissionDenied: permissionDenied && outcomes.every((outcome) => outcome !== "written" && outcome !== "skipped")
   };
 };
 

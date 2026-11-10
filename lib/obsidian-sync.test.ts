@@ -5,6 +5,7 @@ import { authorizeObsidianDirectory } from "./obsidian-authorization.ts";
 import {
   fingerprintMarkdown,
   mergeObsidianSyncCache,
+  obsidianFileName,
   parseObsidianSyncCache,
   syncReviewsToDirectory
 } from "./obsidian-sync.ts";
@@ -118,7 +119,7 @@ test("dates already recorded in the sync cache skip content reads and writes whe
 
   assert.deepEqual(result.skipped, ["2026-08-01"]);
   assert.deepEqual(result.written, ["2026-08-02"]);
-  // Existence is confirmed once; content is not read again for a cache hit.
+  // The matching file is opened once to compare its text, then left untouched.
   assert.deepEqual(accesses.filter((name) => name === "2026-08-01.md"), ["2026-08-01.md"]);
   assert.ok(accesses.includes("2026-08-02.md"));
   assert.deepEqual(writes, ["2026-08-02.md"]);
@@ -144,6 +145,46 @@ test("a cache hit whose vault file is missing is rewritten instead of reporting 
   assert.deepEqual(writes, ["2026-08-01.md"]);
   assert.equal(files.get("2026-08-01.md"), reviewToMarkdown(dayOne));
   assert.equal(result.fingerprints["2026-08-01"], dayOneFingerprint);
+});
+
+test("a matching fingerprint still rewrites a vault file whose text is stale", async () => {
+  const review = makeReview("2026-08-01", "公司里写下的新内容");
+  const { directory, files, writes } = createDirectory({
+    files: { "2026-08-01.md": reviewToMarkdown(makeReview("2026-08-01", "旧内容")) }
+  });
+
+  const result = await syncReviewsToDirectory(directory, [review], {
+    syncedFingerprints: { "2026-08-01": fingerprintMarkdown(reviewToMarkdown(review)) }
+  });
+
+  assert.deepEqual(result.written, ["2026-08-01"]);
+  assert.deepEqual(result.skipped, []);
+  assert.deepEqual(result.failed, []);
+  assert.equal(result.permissionDenied, false);
+  assert.deepEqual(writes, ["2026-08-01.md"]);
+  assert.equal(files.get("2026-08-01.md"), reviewToMarkdown(review));
+});
+
+test("a timestamp date is stored under the calendar-day file name", async () => {
+  const review = makeReview("2026-11-06T00:00:00.000Z", "跨天时间戳");
+  const { directory, files } = createDirectory();
+
+  const result = await syncReviewsToDirectory(directory, [review]);
+
+  assert.equal(obsidianFileName(review.date), "2026-11-06.md");
+  assert.deepEqual(result.written, ["2026-11-06T00:00:00.000Z"]);
+  assert.equal(files.get("2026-11-06.md"), reviewToMarkdown(review));
+  assert.equal(files.has("2026-11-06T00:00:00.000Z.md"), false);
+});
+
+test("every write being rejected is reported as a directory permission failure", async () => {
+  const review = makeReview("2026-08-01", "写不进去");
+  const { directory } = createDirectory({ failing: ["2026-08-01.md"] });
+
+  const result = await syncReviewsToDirectory(directory, [review]);
+
+  assert.deepEqual(result.failed, ["2026-08-01"]);
+  assert.equal(result.permissionDenied, true);
 });
 
 test("a cache entry whose content changed is rewritten", async () => {
@@ -179,7 +220,8 @@ test("merging the sync cache only keeps fingerprints for dates that synced succe
     written: ["2026-08-01"],
     skipped: [],
     failed: ["2026-08-02"],
-    fingerprints: { "2026-08-01": "fp-1" }
+    fingerprints: { "2026-08-01": "fp-1" },
+    permissionDenied: false
   });
 
   assert.deepEqual(merged, {

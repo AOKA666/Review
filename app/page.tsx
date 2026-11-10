@@ -77,6 +77,8 @@ const i18n = {
     connectObsidian: "连接 Obsidian",
     syncObsidianNow: "立即同步 Obsidian",
     obsidianSyncSuccess: "已成功同步到 Obsidian",
+    obsidianNothingToSync: "没有可写入 Obsidian 的记录",
+    obsidianSyncFailed: "有些日期没能写入 Obsidian",
     changeObsidianFolder: "更换 Obsidian 文件夹",
     collapse: "折叠",
     updatedAt: "更新于",
@@ -119,6 +121,8 @@ const i18n = {
     connectObsidian: "Connect Obsidian",
     syncObsidianNow: "Sync Obsidian now",
     obsidianSyncSuccess: "Successfully synced to Obsidian",
+    obsidianNothingToSync: "Nothing to write to Obsidian",
+    obsidianSyncFailed: "Some days could not be written to Obsidian",
     changeObsidianFolder: "Change Obsidian folder",
     collapse: "Collapse",
     updatedAt: "Updated",
@@ -504,13 +508,34 @@ export default function HomePage() {
     controller.replaceReviews(list);
     return persistController();
   };
+  const reviewsToSync = () => {
+    const visible = latestReviews.current;
+    const stored = ensureController().state.reviews;
+    const source = visible.length ? visible : stored;
+    const normalized = sortReviews(source.map(normalizeReview));
+    latestReviews.current = normalized;
+    return normalized;
+  };
+  const obsidianDirectoryDependencies = {
+    pick: pickDirectory,
+    hasPermission: hasWritePermission,
+    requestPermission: requestWritePermission,
+    save: saveDirectoryHandle
+  };
   const syncPendingReviewsToObsidian = async (payload: ReviewRecord[]) => {
     const handle = obsidianDirectoryRef.current;
-    if (!handle || !payload.length) return;
+    if (!handle) {
+      setObsidianStatus("permission");
+      return "permission";
+    }
+    if (!payload.length) {
+      setObsidianNotice(t.obsidianNothingToSync);
+      return "empty";
+    }
     try {
       if (!(await hasWritePermission(handle))) {
         setObsidianStatus("permission");
-        return;
+        return "permission";
       }
       setObsidianStatus("syncing");
       const cache = readObsidianSyncCache();
@@ -518,14 +543,22 @@ export default function HomePage() {
         syncedFingerprints: cache[handle.name] ?? {}
       });
       writeObsidianSyncCache(mergeObsidianSyncCache(cache, handle.name, payload, result));
+      if (result.permissionDenied) {
+        setObsidianStatus("permission");
+        return "permission";
+      }
       if (result.failed.length) {
         setObsidianStatus("error");
-        return;
+        setObsidianNotice(t.obsidianSyncFailed);
+        return "error";
       }
       setObsidianStatus("synced");
       setObsidianNotice(t.obsidianSyncSuccess);
+      return "synced";
     } catch {
       setObsidianStatus("error");
+      setObsidianNotice(t.obsidianSyncFailed);
+      return "error";
     }
   };
 
@@ -533,12 +566,12 @@ export default function HomePage() {
     if (!supportsObsidianSync()) { setObsidianStatus("unsupported"); return; }
     try {
       const hadSavedHandle = Boolean(obsidianDirectoryRef.current);
-      const handle = await authorizeObsidianDirectory(obsidianDirectoryRef.current, {
-        pick: pickDirectory,
-        hasPermission: hasWritePermission,
-        requestPermission: requestWritePermission,
-        save: saveDirectoryHandle
-      });
+      let handle = await authorizeObsidianDirectory(obsidianDirectoryRef.current, obsidianDirectoryDependencies);
+      // A saved handle can lose write permission without opening the picker.
+      // Ask for the folder again in the same click so the sync is not stuck.
+      if (!handle && hadSavedHandle) {
+        handle = await authorizeObsidianDirectory(null, obsidianDirectoryDependencies);
+      }
       if (!handle) {
         setObsidianStatus("permission");
         return;
@@ -554,7 +587,23 @@ export default function HomePage() {
           writeObsidianSyncCache(cache);
         }
       }
-      await syncPendingReviewsToObsidian(latestReviews.current);
+      reviewsToSync();
+      const attempt = await syncPendingReviewsToObsidian(latestReviews.current);
+      if (attempt === "permission") {
+        const picked = await authorizeObsidianDirectory(null, obsidianDirectoryDependencies);
+        if (!picked) {
+          setObsidianStatus("permission");
+          return;
+        }
+        obsidianDirectoryRef.current = picked;
+        const cache = readObsidianSyncCache();
+        if (cache[picked.name]) {
+          delete cache[picked.name];
+          writeObsidianSyncCache(cache);
+        }
+        reviewsToSync();
+        await syncPendingReviewsToObsidian(latestReviews.current);
+      }
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
       setObsidianStatus("error");
@@ -564,12 +613,7 @@ export default function HomePage() {
   const handleObsidianFolderChange = async () => {
     if (!supportsObsidianSync()) { setObsidianStatus("unsupported"); return; }
     try {
-      const handle = await authorizeObsidianDirectory(null, {
-        pick: pickDirectory,
-        hasPermission: hasWritePermission,
-        requestPermission: requestWritePermission,
-        save: saveDirectoryHandle
-      });
+      const handle = await authorizeObsidianDirectory(null, obsidianDirectoryDependencies);
       if (!handle) {
         setObsidianStatus("permission");
         return;
@@ -583,6 +627,7 @@ export default function HomePage() {
         delete cache[handle.name];
         writeObsidianSyncCache(cache);
       }
+      reviewsToSync();
       await syncPendingReviewsToObsidian(latestReviews.current);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") return;
@@ -946,7 +991,6 @@ export default function HomePage() {
   }, [obsidianNotice]);
 
   useEffect(() => { currentIdRef.current = currentId; }, [currentId]);
-  useEffect(() => { latestReviews.current = reviews; }, [reviews]);
 
   useEffect(() => {
     if (currentWeeklyEnd) void generateWeeklyReview(currentWeeklyEnd);
